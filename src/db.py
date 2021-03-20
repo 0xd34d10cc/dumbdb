@@ -6,12 +6,11 @@ from dataclasses import dataclass, field
 
 from lark import Lark, LarkError, Transformer, v_args
 
-from lru_cache import LRUCache
+from pager import Pager, page_size
 
 int_size = 4
 str_size = 16
 cached_pages = 128
-page_size = 4096
 
 row_size = int_size + str_size + str_size
 row_fmt = f'<i{str_size}s{str_size}s'
@@ -44,67 +43,6 @@ class Metadata:
     def unpack(data):
         return Metadata(*struct.unpack(metadata_fmt, data))
 
-
-@dataclass
-class Pager:
-    io: object  # usually a file
-
-    def __init__(self, io, capacity=128):
-        self.io = io
-        self.cache = LRUCache(capacity)
-
-    def get(self, index):
-        # first, check the cache
-        page = self.cache.get(index)
-        if page:
-            return page
-
-        # page not in cache, read from disk
-        page = self.read(index)
-
-        # put new page to cache, write evicted page to disk
-        evicted = self.cache.put(index, page)
-        if evicted:
-            i, p = evicted
-            self.write(i, p)
-
-        return page
-
-    def put(self, index, page):
-        assert len(page) == page_size
-        cached = self.cache.get(index)
-        if page is cached:
-            return
-
-        self.cache.put(index, page)
-
-    @contextlib.contextmanager
-    def modify(self, index):
-        page = self.get(index)
-        yield page
-        self.put(index, page)
-
-    def read(self, index):
-        self.io.seek(page_size * index)
-        page = self.io.read(page_size)
-        page = bytearray(page_size) if len(page) == 0 else bytearray(page)
-        assert len(page) == page_size
-        return page
-
-    def write(self, index, page):
-        assert len(page) == page_size
-        self.io.seek(page_size * index)
-        n = self.io.write(page)
-        assert n == page_size
-
-    def close(self):
-        for index, page in self.cache.items():
-            self.write(index, page)
-
-        self.io.flush()
-        self.io.close()
-
-
 @dataclass
 class Database:
     pager: Pager
@@ -112,7 +50,7 @@ class Database:
 
     def __init__(self, pager=None):
         if pager is None:
-            pager = Pager(io.BytesIO())
+            pager = Pager(io.BytesIO(), capacity=cached_pages)
 
         page = pager.get(0)
         metadata = Metadata.unpack(page[:metadata_size])

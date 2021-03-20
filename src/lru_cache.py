@@ -11,17 +11,19 @@ class LRUCache:
     def items(self):
         return self.cache.items()
 
+    def update(self, key):
+        self.cache.move_to_end(key)
+
     # we return the value of the key
     # that is queried in O(1) and return None if we
     # don't find the key in out dict / cache.
     # And also move the key to the end
     # to show that it was recently used.
     def get(self, key):
-        if key not in self.cache:
-            return None
-        else:
+        value = self.cache.get(key, None)
+        if value is not None:
             self.cache.move_to_end(key)
-            return self.cache[key]
+        return value
 
     # first, we add / update the key by conventional methods.
     # And also move the key to the end to show that it was recently used.
