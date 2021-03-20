@@ -1,62 +1,37 @@
-import struct
-import functools
 import io
 import contextlib
-from dataclasses import dataclass, field
 
 import query
 from pager import Pager, page_size
-
-int_size = 4
-str_size = 16
-cached_pages = 128
-
-row_size = int_size + str_size + str_size
-row_fmt = f'<i{str_size}s{str_size}s'
-
-metadata_size = int_size
-metadata_fmt = f'<i'
+from table import Table, Int, String
 
 
-@dataclass
-class Row:
-    id: int
-    username: str
-    email: str
-
-    def pack(self):
-        return struct.pack(row_fmt, self.id, self.username.encode('ascii'), self.email.encode('ascii'))
-
-    def unpack(data):
-        id, username, email = struct.unpack(row_fmt, data)
-        return Row(id, username.decode('ascii').rstrip('\0'), email.decode('ascii').rstrip('\0'))
-
-
-@dataclass
-class Metadata:
+class Database:
+    pager: Pager
+    table: Table
     n_rows: int
 
-    def pack(self):
-        return struct.pack(metadata_fmt, self.n_rows)
+    def __init__(self, table=None, pager=None):
+        if table is None:
+            table = Table([
+                ('id', Int),
+                ('username', String(16)),
+                ('email', String(16))
+            ])
 
-    def unpack(data):
-        return Metadata(*struct.unpack(metadata_fmt, data))
-
-@dataclass
-class Database:
-    def __init__(self, pager=None):
         if pager is None:
-            pager = Pager(io.BytesIO(), capacity=cached_pages)
+            pager = Pager(io.BytesIO(), capacity=128)
 
         page = pager.get(0)
-        metadata = Metadata.unpack(page[:metadata_size])
+        n_rows = int.from_bytes(page[:4], 'little')
 
         self.pager = pager
-        self.metadata = metadata
+        self.table = table
+        self.n_rows = n_rows
 
     def close(self):
         with self.pager.modify(0) as page:
-            page[:metadata_size] = self.metadata.pack()
+            page[:4] = int.to_bytes(self.n_rows, 4, 'little')
         self.pager.close()
 
     def execute(self, q):
@@ -69,20 +44,22 @@ class Database:
         assert False, f'Unknown query: {q}'
 
     def insert(self, values):
-        offset = self.row_offset(self.metadata.n_rows)
-        self.pager.write_at(offset, Row(*values).pack())
-        self.metadata.n_rows += 1
+        offset = self.row_offset(self.n_rows)
+        self.pager.write_at(offset, self.table.pack(values))
+        self.n_rows += 1
 
     def select(self):
         rows = []
-        for i in range(self.metadata.n_rows):
+        row_size = self.table.row_size()
+        for i in range(self.n_rows):
             offset = self.row_offset(i)
-            r = Row.unpack(self.pager.read_at(offset, row_size))
-            rows.append((r.id, r.username, r.email))
+            data = self.pager.read_at(offset, row_size)
+            r = self.table.unpack(data)
+            rows.append(r)
         return rows
 
     def row_offset(self, index):
-        return metadata_size + index * row_size
+        return 4 + index * self.table.row_size()
 
 
 def repl():
