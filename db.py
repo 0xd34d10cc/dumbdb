@@ -2,9 +2,12 @@ import struct
 import functools
 import io
 import contextlib
+
 from dataclasses import dataclass, field
 
 from lark import Lark, LarkError, Transformer, v_args
+
+import lru_cache
 
 int_size = 4
 str_size = 16
@@ -47,27 +50,45 @@ class Metadata:
 class Pager:
     io: object  # usually a file
 
-    def __init__(self, io):
+    def __init__(self, io, capacity=128):
         self.io = io
-        # TODO: proper cache with reuse of pages
-        self.read_at = functools.lru_cache(maxsize=cached_pages)(self.read_at)
+        self.lru_cache = lru_cache.LRUCache(capacity)
 
     def read_at(self, index):
+        page = self.lru_cache.get(index)
+        if page:
+            return page
+
         self.io.seek(page_size * index)
         page = self.io.read(page_size)
-        if len(page) == 0:  # new page
-            return bytearray(page_size)
+
+        page = bytearray(page_size) if len(page) == 0 else bytearray(page)
         assert len(page) == page_size
-        return bytearray(page)
+
+        excluded_pair = self.lru_cache.put(index, page)
+        if excluded_pair:
+            excluded_index, excluded_page = excluded_pair
+            self.write_to_disk(excluded_index, excluded_page)
+
+        return page
 
     def write_at(self, index, page):
+        cached_page = self.lru_cache.get(index)
+        if page is cached_page:
+            return
+
+        self.lru_cache.put(index, page)
+
+    def write_to_disk(self, index, page):
         assert len(page) == page_size
-        # TODO: use cache
         self.io.seek(page_size * index)
         n = self.io.write(page)
         assert n == page_size
 
     def close(self):
+        for index, page in self.lru_cache.items():
+            self.write_to_disk(index, page)
+
         self.io.flush()
         self.io.close()
 

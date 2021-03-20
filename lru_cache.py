@@ -8,6 +8,9 @@ class LRUCache:
         self.cache = OrderedDict()
         self.capacity = capacity
 
+    def items(self):
+        return self.cache.items()
+
     # we return the value of the key
     # that is queried in O(1) and return -1 if we
     # don't find the key in out dict / cache.
