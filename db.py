@@ -227,6 +227,15 @@ def test_insert_and_select():
     assert db.select() == [r1, r2]
 
 
+def test_insert_array():
+    db = Database()
+    rows = [Row(i, str(i), str(i ** 2)) for i in range(1000)]
+    for row in rows:
+        db.insert(row)
+
+    assert db.select() == rows
+
+
 if __name__ == '__main__':
     try:
         repl()
