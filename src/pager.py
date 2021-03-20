@@ -38,7 +38,7 @@ class Pager:
     def modify(self, index):
         page = self.get(index)
         yield page
-        self.put(index, page)
+        self.cache.update(index)
 
     def read(self, index):
         self.io.seek(page_size * index)
@@ -52,6 +52,28 @@ class Pager:
         self.io.seek(page_size * index)
         n = self.io.write(page)
         assert n == page_size
+
+    def read_at(self, file_offset, n):
+        page_num = file_offset // page_size
+        off = file_offset % page_size
+        page = self.get(page_num)
+        if off + n <= page_size:
+            return page[off:off+n]
+        else:
+            next_page = self.get(page_num + 1)
+            return page[off:] + next_page[:n - (page_size - off)]
+
+    def write_at(self, file_offset, data):
+        page_num = file_offset // page_size
+        off = file_offset % page_size
+        with self.modify(page_num) as page:
+            if off + len(data) <= page_size:
+                page[off:off+len(data)] = data
+            else:
+                mid = page_size - off
+                page[off:] = data[:mid]
+                with self.modify(page_num + 1) as next_page:
+                    next_page[:len(data) - mid] = data[mid:]
 
     def close(self):
         for index, page in self.cache.items():
