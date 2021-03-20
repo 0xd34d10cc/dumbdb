@@ -1,4 +1,5 @@
 import io
+import contextlib
 
 import query
 from pager import Pager
