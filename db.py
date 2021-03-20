@@ -98,8 +98,8 @@ class Pager:
         assert n == page_size
 
     def close(self):
-        for index, page in self.lru_cache.items():
-            self.write_to_disk(index, page)
+        for index, page in self.cache.items():
+            self.write(index, page)
 
         self.io.flush()
         self.io.close()
@@ -121,9 +121,8 @@ class Database:
         self.metadata = metadata
 
     def close(self):
-        page = self.pager.get(0)
-        page[:metadata_size] = self.metadata.pack()
-        self.pager.put(0, page)
+        with self.pager.modify(0) as page:
+            page[:metadata_size] = self.metadata.pack()
         self.pager.close()
 
     def execute(self, query):
@@ -134,6 +133,19 @@ class Database:
             return self.select()
 
         assert False, f'Unknown query: {query}'
+
+    def insert(self, row):
+        offset = self.row_offset(self.metadata.n_rows)
+        self.write_at(offset, row.pack())
+        self.metadata.n_rows += 1
+
+    def select(self):
+        rows = []
+        for i in range(self.metadata.n_rows):
+            offset = self.row_offset(i)
+            r = Row.unpack(self.read_at(offset, row_size))
+            rows.append(r)
+        return rows
 
     def row_offset(self, index):
         return metadata_size + index * row_size
@@ -159,19 +171,6 @@ class Database:
                 page[off:] = data[:mid]
                 with self.pager.modify(page_num + 1) as next_page:
                     next_page[:len(data) - mid] = data[mid:]
-
-    def insert(self, row):
-        offset = self.row_offset(self.metadata.n_rows)
-        self.write_at(offset, row.pack())
-        self.metadata.n_rows += 1
-
-    def select(self):
-        rows = []
-        for i in range(self.metadata.n_rows):
-            offset = self.row_offset(i)
-            r = Row.unpack(self.read_at(offset, row_size))
-            rows.append(r)
-        return rows
 
 
 @dataclass
@@ -244,23 +243,23 @@ def repl():
 
 
 def test_insert_and_select():
-    db = Database()
-    r1 = Row(123, 'alloe', 'arbue')
-    db.insert(r1)
-    assert db.select() == [r1]
+    with contextlib.closing(Database()) as db:
+        r1 = Row(123, 'alloe', 'arbue')
+        db.insert(r1)
+        assert db.select() == [r1]
 
-    r2 = Row(456, 'pog', 'kekw')
-    db.insert(r2)
-    assert db.select() == [r1, r2]
+        r2 = Row(456, 'pog', 'kekw')
+        db.insert(r2)
+        assert db.select() == [r1, r2]
 
 
 def test_insert_array():
-    db = Database()
-    rows = [Row(i, str(i), str(i ** 2)) for i in range(1000)]
-    for row in rows:
-        db.insert(row)
+    with contextlib.closing(Database()) as db:
+        rows = [Row(i, str(i), str(i ** 2)) for i in range(1000)]
+        for row in rows:
+            db.insert(row)
 
-    assert db.select() == rows
+        assert db.select() == rows
 
 
 if __name__ == '__main__':
