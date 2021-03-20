@@ -16,8 +16,9 @@ grammar = '''
     ?start: query
 
     ?query: select | insert
-    select: "select" "*"         -> select
-    insert: "insert" num str str -> insert
+    select: "select" "*"                -> select
+    insert: "insert" value ("," value)* -> insert
+    ?value: num | str
 
     num: SIGNED_INT     -> num
     str: ESCAPED_STRING -> str
@@ -40,8 +41,8 @@ class QueryTransformer(Transformer):
     def select(self):
         return Select()
 
-    def insert(self, id, username, email):
-        return Insert(Row(id, username, email))
+    def insert(self, *values):
+        return Insert(values)
 
 
 parser = Lark(grammar, parser='lalr', transformer=QueryTransformer())

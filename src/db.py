@@ -1,8 +1,7 @@
 import io
-import contextlib
 
 import query
-from pager import Pager, page_size
+from pager import Pager
 from table import Table, Int, String
 
 
@@ -62,28 +61,6 @@ class Database:
         return 4 + index * self.table.row_size()
 
 
-def repl():
-    pager = Pager(io=open('data.bin', 'r+b'))
-    db = Database(pager=pager)
-
-    with contextlib.closing(db) as db:
-        while True:
-            query = input('db > ').strip()
-            if query.startswith('.'):
-                if query == '.exit':
-                    return
-
-                print(f'Unrecognized command: {query}')
-                continue
-
-            try:
-                query = parse(query)
-            except LarkError as e:
-                print(e)
-                continue
-
-            print(db.execute(query))
-
 
 def test_insert_and_select():
     with contextlib.closing(Database()) as db:
@@ -103,10 +80,3 @@ def test_insert_array():
             db.execute(query.Insert(row))
 
         assert db.execute(query.Select()) == rows
-
-
-if __name__ == '__main__':
-    try:
-        repl()
-    except KeyboardInterrupt:
-        print('^C')
