@@ -2,12 +2,11 @@ import struct
 import functools
 import io
 import contextlib
-
 from dataclasses import dataclass, field
 
 from lark import Lark, LarkError, Transformer, v_args
 
-import lru_cache
+from lru_cache import LRUCache
 
 int_size = 4
 str_size = 16
@@ -52,34 +51,47 @@ class Pager:
 
     def __init__(self, io, capacity=128):
         self.io = io
-        self.lru_cache = lru_cache.LRUCache(capacity)
+        self.cache = LRUCache(capacity)
 
-    def read_at(self, index):
-        page = self.lru_cache.get(index)
+    def get(self, index):
+        # first, check the cache
+        page = self.cache.get(index)
         if page:
             return page
 
-        self.io.seek(page_size * index)
-        page = self.io.read(page_size)
+        # page not in cache, read from disk
+        page = self.read(index)
 
-        page = bytearray(page_size) if len(page) == 0 else bytearray(page)
-        assert len(page) == page_size
-
-        excluded_pair = self.lru_cache.put(index, page)
-        if excluded_pair:
-            excluded_index, excluded_page = excluded_pair
-            self.write_to_disk(excluded_index, excluded_page)
+        # put new page to cache, write evicted page to disk
+        evicted = self.cache.put(index, page)
+        if evicted:
+            i, p = evicted
+            self.write(i, p)
 
         return page
 
-    def write_at(self, index, page):
-        cached_page = self.lru_cache.get(index)
-        if page is cached_page:
+    def put(self, index, page):
+        assert len(page) == page_size
+        cached = self.cache.get(index)
+        if page is cached:
             return
 
-        self.lru_cache.put(index, page)
+        self.cache.put(index, page)
 
-    def write_to_disk(self, index, page):
+    @contextlib.contextmanager
+    def modify(self, index):
+        page = self.get(index)
+        yield page
+        self.put(index, page)
+
+    def read(self, index):
+        self.io.seek(page_size * index)
+        page = self.io.read(page_size)
+        page = bytearray(page_size) if len(page) == 0 else bytearray(page)
+        assert len(page) == page_size
+        return page
+
+    def write(self, index, page):
         assert len(page) == page_size
         self.io.seek(page_size * index)
         n = self.io.write(page)
@@ -102,16 +114,16 @@ class Database:
         if pager is None:
             pager = Pager(io.BytesIO())
 
-        page = pager.read_at(0)
+        page = pager.get(0)
         metadata = Metadata.unpack(page[:metadata_size])
 
         self.pager = pager
         self.metadata = metadata
 
     def close(self):
-        page = self.pager.read_at(0)
+        page = self.pager.get(0)
         page[:metadata_size] = self.metadata.pack()
-        self.pager.write_at(0, page)
+        self.pager.put(0, page)
         self.pager.close()
 
     def execute(self, query):
@@ -123,26 +135,41 @@ class Database:
 
         assert False, f'Unknown query: {query}'
 
-    def location(self, index):
-        offset = index * row_size + metadata_size
-        page_num = offset // page_size
-        offset -= page_size * page_num
-        return page_num, offset
+    def row_offset(self, index):
+        return metadata_size + index * row_size
+
+    def read_at(self, file_offset, n):
+        page_num = file_offset // page_size
+        off = file_offset % page_size
+        page = self.pager.get(page_num)
+        if off + n <= page_size:
+            return page[off:off+n]
+        else:
+            next_page = self.pager.get(page_num + 1)
+            return page[off:] + next_page[:n - (page_size - off)]
+
+    def write_at(self, file_offset, data):
+        page_num = file_offset // page_size
+        off = file_offset % page_size
+        with self.pager.modify(page_num) as page:
+            if off + len(data) <= page_size:
+                page[off:off+len(data)] = data
+            else:
+                mid = page_size - off
+                page[off:] = data[:mid]
+                with self.pager.modify(page_num + 1) as next_page:
+                    next_page[:len(data) - mid] = data[mid:]
 
     def insert(self, row):
-        page_num, offset = self.location(self.metadata.n_rows)
-        page = self.pager.read_at(page_num)
-        # TODO: handle case when row is split between pages
-        page[offset:offset + row_size] = row.pack()
-        self.pager.write_at(page_num, page)
+        offset = self.row_offset(self.metadata.n_rows)
+        self.write_at(offset, row.pack())
         self.metadata.n_rows += 1
 
     def select(self):
         rows = []
         for i in range(self.metadata.n_rows):
-            page_num, offset = self.location(i)
-            page = self.pager.read_at(page_num)
-            r = Row.unpack(page[offset:offset + row_size])
+            offset = self.row_offset(i)
+            r = Row.unpack(self.read_at(offset, row_size))
             rows.append(r)
         return rows
 

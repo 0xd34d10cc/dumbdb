@@ -12,7 +12,7 @@ class LRUCache:
         return self.cache.items()
 
     # we return the value of the key
-    # that is queried in O(1) and return -1 if we
+    # that is queried in O(1) and return None if we
     # don't find the key in out dict / cache.
     # And also move the key to the end
     # to show that it was recently used.
