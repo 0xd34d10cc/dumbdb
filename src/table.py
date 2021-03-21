@@ -2,9 +2,8 @@ import io
 import contextlib
 
 import query
-from pager import Pager
+from pager import Pager, page_size, header_size
 from schema import Schema, Int, String
-
 
 class Table:
     pager: Pager
@@ -20,18 +19,21 @@ class Table:
             ])
 
         if pager is None:
-            pager = Pager(io.BytesIO(), capacity=128)
+            pager = Pager(io.BytesIO(), capacity=128, schema=schema)
 
         page = pager.get(0)
-        n_rows = int.from_bytes(page[:4], 'little')
 
         self.pager = pager
         self.schema = schema
-        self.n_rows = n_rows
+        self.n_rows = page.n_rows
+
+    def flush(self):
+        with self.pager.modify(0) as page:
+            page.n_rows = self.n_rows
+        self.pager.flush()
 
     def close(self):
-        with self.pager.modify(0) as page:
-            page[:4] = int.to_bytes(self.n_rows, 4, 'little')
+        self.flush()
         self.pager.close()
 
     def execute(self, q):
@@ -44,19 +46,32 @@ class Table:
         assert False, f'Unknown query: {q}'
 
     def insert(self, values):
-        offset = self.row_offset(self.n_rows)
-        self.pager.write_at(offset, self.schema.pack(values))
+        page_id, _ = self.row_id(self.n_rows)
+
+        page = self.pager.get(page_id)
+        if not page.insert_row(values):
+             page = self.pager.get(page_id+1)
+             assert page.insert_row(values)
+
         self.n_rows += 1
 
     def select(self):
         rows = []
-        row_size = self.schema.row_size()
         for i in range(self.n_rows):
-            offset = self.row_offset(i)
-            data = self.pager.read_at(offset, row_size)
-            r = self.schema.unpack(data)
-            rows.append(r)
+            page_id, row_id = self.row_id(i)
+            page = self.pager.get(page_id)
+            row = page.get_row(row_id)
+            rows.append(row)
         return rows
+
+    def row_id(self, index) -> (int, int):
+        per_size = self.schema.items_per_page(header_size, page_size)
+        page_id = index // per_size
+        row_id = index % per_size
+
+        # first page is for metadata only, so we start with index 1
+        return page_id + 1, row_id
+
 
     def row_offset(self, index):
         return 4 + index * self.schema.row_size()
@@ -81,3 +96,33 @@ def test_insert_array():
             db.execute(query.Insert(row))
 
         assert db.execute(query.Select()) == rows
+
+def test_insert_and_select_with_close():
+    schema = Schema([
+                ('id', Int),
+                ('username', String(16)),
+                ('email', String(16))
+            ])
+    io_obj = io.BytesIO()
+    pager = Pager(io_obj, capacity=128, schema=schema)
+
+    r1 = (123, 'alloe', 'arbue')
+    r2 = (456, 'pog', 'kekw')
+    buffer = None
+
+    with contextlib.closing(Table(schema=schema, pager=pager)) as db:
+        db.execute(query.Insert(r1))
+        assert db.execute(query.Select()) == [r1]
+
+        db.execute(query.Insert(r2))
+        assert db.execute(query.Select()) == [r1, r2]
+        db.flush()
+        buffer = io_obj.getvalue()
+
+    io_obj = io.BytesIO(bytes(buffer))
+    pager = Pager(io_obj, capacity=128, schema=schema)
+    with contextlib.closing(Table(schema=schema, pager=pager)) as db:
+        assert db.execute(query.Select()) == [r1, r2]
+
+
+

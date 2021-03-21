@@ -56,3 +56,6 @@ class Schema:
         values = struct.unpack(self.fmt, data)
         assert len(values) == len(self.fields)
         return tuple(field.decode(value) for (name, field), value in zip(self.fields, values))
+
+    def items_per_page(self, header_size, page_size):
+        return (page_size - header_size) // self.row_size()

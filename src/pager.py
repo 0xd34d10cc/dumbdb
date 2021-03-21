@@ -3,11 +3,44 @@ import contextlib
 from lru_cache import LRUCache
 
 page_size = 4096
+header_size = 4
+
+class Page:
+    n_rows_size = 4
+    data_offset = n_rows_size
+
+    def __init__(self, schema, data):
+        self.n_rows = int.from_bytes(data[0:self.n_rows_size], 'little')
+        self.schema = schema
+        self.data = data
+        self.max_size = schema.items_per_page(header_size, page_size)
+
+    def get_row(self, index) -> tuple:
+        if self.n_rows - 1 < index:
+            return None
+        offset = self.data_offset + self.schema.row_size() * index
+        needed_slice = self.data[offset:offset+self.schema.row_size()]
+        return self.schema.unpack(needed_slice)
+
+    def insert_row(self, row) -> bool:
+        if self.n_rows == self.max_size:
+            return False
+        offset = self.data_offset + self.schema.row_size() * self.n_rows
+        bin_row = self.schema.pack(row)
+        self.data[offset:offset + self.schema.row_size()] = bin_row
+        self.n_rows += 1
+        return True
+
+    def get_data(self) -> bytearray:
+        binary_n_rows = self.n_rows.to_bytes(self.n_rows_size, 'little')
+        self.data[:self.n_rows_size] = binary_n_rows
+        return self.data
 
 class Pager:
-    def __init__(self, io, capacity):
+    def __init__(self, io, capacity, schema):
         self.io = io
         self.cache = LRUCache(capacity)
+        self.schema = schema
 
     def get(self, page_id):
         # first, check the cache
@@ -17,12 +50,12 @@ class Pager:
 
         # page not in cache, read from disk
         page = self.read(page_id)
-
+        page = Page(self.schema, page)
         # put new page to cache, write evicted page to disk
         evicted = self.cache.put(page_id, page)
         if evicted:
             i, p = evicted
-            self.write(i, p)
+            self.write(i, p.get_data())
 
         return page
 
@@ -56,31 +89,12 @@ class Pager:
         n = self.io.write(page)
         assert n == page_size
 
-    def read_at(self, file_offset, n):
-        page_num = file_offset // page_size
-        off = file_offset % page_size
-        page = self.get(page_num)
-        if off + n <= page_size:
-            return page[off:off+n]
-        else:
-            next_page = self.get(page_num + 1)
-            return page[off:] + next_page[:n - (page_size - off)]
-
-    def write_at(self, file_offset, data):
-        page_num = file_offset // page_size
-        off = file_offset % page_size
-        with self.modify(page_num) as page:
-            if off + len(data) <= page_size:
-                page[off:off+len(data)] = data
-            else:
-                mid = page_size - off
-                page[off:] = data[:mid]
-                with self.modify(page_num + 1) as next_page:
-                    next_page[:len(data) - mid] = data[mid:]
-
-    def close(self):
+    def flush(self):
         for page_id, page in self.cache.items():
-            self.write(page_id, page)
+            self.write(page_id, page.get_data())
 
         self.io.flush()
+
+    def close(self):
+        self.flush()
         self.io.close()

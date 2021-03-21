@@ -1,16 +1,27 @@
 import contextlib
+import os
 
 from lark import LarkError
 from tabulate import tabulate
 
+
 import query
 from table import Table
 from pager import Pager
+from schema import Schema, Int, String
 
 
 def repl():
-    pager = Pager(io=open('data.bin', 'r+b'), capacity=128)
-    table = Table(pager=pager)
+    if not os.path.exists('data.bin'):
+        open('data.bin', 'a').close()
+
+    schema = Schema([
+                ('id', Int),
+                ('username', String(16)),
+                ('email', String(16))
+            ])
+    pager = Pager(io=open('data.bin', 'r+b'), capacity=128, schema=schema)
+    table = Table(pager=pager, schema=schema)
 
     with contextlib.closing(table) as table:
         while True:
