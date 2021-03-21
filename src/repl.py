@@ -4,15 +4,15 @@ from lark import LarkError
 from tabulate import tabulate
 
 import query
-from db import Database
+from table import Table
 from pager import Pager
 
 
 def repl():
     pager = Pager(io=open('data.bin', 'r+b'), capacity=128)
-    db = Database(pager=pager)
+    table = Table(pager=pager)
 
-    with contextlib.closing(db) as db:
+    with contextlib.closing(table) as table:
         while True:
             q = input('db > ').strip()
             if q.startswith('.'):
@@ -28,9 +28,9 @@ def repl():
                 print(e)
                 continue
 
-            rows = db.execute(q)
+            rows = table.execute(q)
             if rows is not None:
-                print(tabulate(rows, headers=[name for name, type in db.table.fields]))
+                print(tabulate(rows, headers=[name for name, type in table.schema.fields]))
 
 
 if __name__ == '__main__':

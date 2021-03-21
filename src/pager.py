@@ -9,36 +9,39 @@ class Pager:
         self.io = io
         self.cache = LRUCache(capacity)
 
-    def get(self, index):
+    def get(self, page_id):
         # first, check the cache
-        page = self.cache.get(index)
+        page = self.cache.get(page_id)
         if page:
             return page
 
         # page not in cache, read from disk
-        page = self.read(index)
+        page = self.read(page_id)
 
         # put new page to cache, write evicted page to disk
-        evicted = self.cache.put(index, page)
+        evicted = self.cache.put(page_id, page)
         if evicted:
             i, p = evicted
             self.write(i, p)
 
         return page
 
-    def put(self, index, page):
+    def put(self, page_id, page):
         assert len(page) == page_size
-        cached = self.cache.get(index)
+        cached = self.cache.get(page_id)
         if page is cached:
             return
 
-        self.cache.put(index, page)
+        self.cache.put(page_id, page)
 
     @contextlib.contextmanager
-    def modify(self, index):
-        page = self.get(index)
+    def modify(self, page_id):
+        page = self.get(page_id)
         yield page
-        self.cache.update(index)
+        try:
+            self.cache.update(page_id)
+        except KeyError:
+            self.cache.put(page_id, page)
 
     def read(self, index):
         self.io.seek(page_size * index)
@@ -76,8 +79,8 @@ class Pager:
                     next_page[:len(data) - mid] = data[mid:]
 
     def close(self):
-        for index, page in self.cache.items():
-            self.write(index, page)
+        for page_id, page in self.cache.items():
+            self.write(page_id, page)
 
         self.io.flush()
         self.io.close()
