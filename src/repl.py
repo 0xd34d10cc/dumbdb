@@ -12,16 +12,18 @@ from schema import Schema, Int, String
 
 
 def repl():
-    if not os.path.exists('data.bin'):
-        open('data.bin', 'a').close()
-
     schema = Schema([
-                ('id', Int),
-                ('username', String(16)),
-                ('email', String(16))
-            ])
-    pager = Pager(io=open('data.bin', 'r+b'), capacity=128, schema=schema)
-    table = Table(pager=pager, schema=schema)
+        ('id', Int),
+        ('username', String(16)),
+        ('email', String(16))
+    ])
+
+    if not os.path.exists('data.bin'):
+        open('data.bin', 'ab').close()
+
+    file = open('data.bin', 'r+b')
+    pager = Pager(file, schema, cached_pages=128)
+    table = Table(schema, pager)
 
     with contextlib.closing(table) as table:
         while True:

@@ -47,6 +47,9 @@ class Schema:
     def row_size(self):
         return self.record_size
 
+    def rows_per_page(self, header_size, page_size):
+        return (page_size - header_size) // self.row_size()
+
     def pack(self, values):
         assert len(values) == len(self.fields)
         values = tuple(field.encode(value) for (name, field), value in zip(self.fields, values))
@@ -56,6 +59,3 @@ class Schema:
         values = struct.unpack(self.fmt, data)
         assert len(values) == len(self.fields)
         return tuple(field.decode(value) for (name, field), value in zip(self.fields, values))
-
-    def items_per_page(self, header_size, page_size):
-        return (page_size - header_size) // self.row_size()

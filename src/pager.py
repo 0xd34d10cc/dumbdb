@@ -13,7 +13,7 @@ class Page:
         self.n_rows = int.from_bytes(data[0:self.n_rows_size], 'little')
         self.schema = schema
         self.data = data
-        self.max_size = schema.items_per_page(header_size, page_size)
+        self.max_rows = schema.rows_per_page(header_size, page_size)
 
     def get_row(self, index) -> tuple:
         if self.n_rows - 1 < index:
@@ -23,7 +23,7 @@ class Page:
         return self.schema.unpack(needed_slice)
 
     def insert_row(self, row) -> bool:
-        if self.n_rows == self.max_size:
+        if self.n_rows == self.max_rows:
             return False
         offset = self.data_offset + self.schema.row_size() * self.n_rows
         bin_row = self.schema.pack(row)
@@ -36,10 +36,11 @@ class Page:
         self.data[:self.n_rows_size] = binary_n_rows
         return self.data
 
+
 class Pager:
-    def __init__(self, io, capacity, schema):
+    def __init__(self, io, schema, cached_pages):
         self.io = io
-        self.cache = LRUCache(capacity)
+        self.cache = LRUCache(cached_pages)
         self.schema = schema
 
     def get(self, page_id):
@@ -90,6 +91,7 @@ class Pager:
         assert n == page_size
 
     def flush(self):
+        # TODO: write only dirty pages
         for page_id, page in self.cache.items():
             self.write(page_id, page.get_data())
 
