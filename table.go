@@ -12,18 +12,16 @@ type LockedPage struct {
 	wasDirty    bool
 
 	nRows uint16
-	id    PageID
 	page  *Page
 }
 
-func LockPage(id PageID, page *Page) LockedPage {
+func LockPage(page *Page) LockedPage {
 	nRows := binary.LittleEndian.Uint16(page.Data()[:2])
 	return LockedPage{
 		initialRows: nRows,
 		wasDirty:    page.IsDirty(),
 
 		nRows: nRows,
-		id:    id,
 		page:  page,
 	}
 }
@@ -114,7 +112,7 @@ func (table *Table) insertInto(id PageID, rows []Row) (int, error) {
 	}
 
 	i := 0
-	lockedPage := LockPage(id, page)
+	lockedPage := LockPage(page)
 	defer lockedPage.Unlock()
 	for i < len(rows) && lockedPage.TryInsert(rows[i], &table.schema) {
 		i++
