@@ -2,9 +2,6 @@
 package main
 
 import (
-	"fmt"
-	"strings"
-
 	"github.com/alecthomas/participle/v2"
 	"github.com/alecthomas/participle/v2/lexer"
 )
@@ -26,28 +23,9 @@ type Type struct {
 	Varchar int  `| "varchar" "(" @Int ")"`
 }
 
-func (t *Type) String() string {
-	if t == nil {
-		return "<nil type>"
-	}
-
-	if t.Integer {
-		return "int"
-	}
-
-	return fmt.Sprintf("varchar(%d)", t.Varchar)
-}
-
 type FieldDescription struct {
 	Name string `@Ident`
 	Type *Type  `@@`
-}
-
-func (f *FieldDescription) String() string {
-	if f == nil {
-		return "<nil field description>"
-	}
-	return fmt.Sprintf("%s %v", f.Name, f.Type)
 }
 
 type Create struct {
@@ -55,39 +33,57 @@ type Create struct {
 	Fields []FieldDescription `"(" @@ ("," @@)*  ")"`
 }
 
-func (q *Create) String() string {
-	if q == nil {
-		return "<nil create query>"
-	}
+// Same as Value, but based on pointers
+type ValuePtr struct {
+	Int *int32  `@Int`
+	Str *string `| @String`
+}
 
-	var s strings.Builder
-	s.WriteString("create table ")
-	s.WriteString(q.Name)
-	s.WriteString(" (")
-	for i, field := range q.Fields {
-		s.WriteString(field.String())
-		if i != len(q.Fields)-1 {
-			s.WriteString(", ")
+func (val *ValuePtr) ToValue() Value {
+	switch {
+	case val.Int != nil:
+		return Value{
+			TypeID: TypeInt,
+			Int:    *val.Int,
+		}
+	case val.Str != nil:
+		return Value{
+			TypeID: TypeVarchar,
+			Str:    *val.Str,
 		}
 	}
-	s.WriteByte(')')
-	return s.String()
+
+	panic("unhandled type")
+}
+
+type RowPtr struct {
+	Values []ValuePtr `"(" @@ ("," @@)* ")"`
+}
+
+func (row *RowPtr) ToRow() Row {
+	values := make([]Value, 0, len(row.Values))
+	for _, val := range row.Values {
+		values = append(values, val.ToValue())
+	}
+	return values
+}
+
+func ConvertRows(ptrs []RowPtr) []Row {
+	rows := make([]Row, 0, len(ptrs))
+	for _, row := range ptrs {
+		rows = append(rows, row.ToRow())
+	}
+	return rows
+}
+
+type Insert struct {
+	Name string   `"insert" "into" @Ident`
+	Rows []RowPtr `"values" @@ ("," @@)*`
 }
 
 type Query struct {
 	Create *Create `@@`
-}
-
-func (q *Query) String() string {
-	if q == nil {
-		return "<nil query>"
-	}
-
-	if q.Create != nil {
-		return q.Create.String()
-	}
-
-	return "<invalid query>"
+	Insert *Insert `| @@`
 }
 
 var parser = participle.MustBuild(&Query{},

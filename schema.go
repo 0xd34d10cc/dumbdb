@@ -1,6 +1,10 @@
 package main
 
-import "strconv"
+import (
+	"errors"
+	"fmt"
+	"strconv"
+)
 
 type TypeID uint8
 
@@ -9,10 +13,40 @@ const (
 	TypeVarchar
 )
 
+func (t TypeID) String() string {
+	switch t {
+	case TypeInt:
+		return "int"
+	case TypeVarchar:
+		return "varchar"
+	}
+
+	return "<invalid type id>"
+}
+
 type Field struct {
 	name   string
 	typeID TypeID
 	len    uint8
+}
+
+func (field *Field) Typecheck(v *Value) error {
+	if field.typeID != v.TypeID {
+		return fmt.Errorf("unexpected type for %v (expected %v, got %v)", field.name, field.typeID, v.TypeID)
+	}
+
+	switch field.typeID {
+	case TypeInt:
+		// nothing
+	case TypeVarchar:
+		if len(v.Str) > int(field.len) {
+			return fmt.Errorf("value for %v is too long (%v is max)", field.name, field.len)
+		}
+	default:
+		panic("unhandled type id")
+	}
+
+	return nil
 }
 
 func (field *Field) Read(data []byte) Value {
@@ -82,6 +116,22 @@ func NewSchema(desc []FieldDescription) Schema {
 		fields:   fields,
 		totalLen: totalLen,
 	}
+}
+
+// Check whether row matches the schema, returns nil on success
+func (schema *Schema) Typecheck(row Row) error {
+	if len(schema.fields) != len(row) {
+		return errors.New("number of values doesn't match number of columns")
+	}
+
+	for i := 0; i < len(schema.fields); i++ {
+		err := schema.fields[i].Typecheck(&row[i])
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (schema *Schema) ReadRow(data []byte) Row {
