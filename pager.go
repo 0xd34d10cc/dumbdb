@@ -51,7 +51,7 @@ func (page *Page) MarkDirty() {
 	page.dirty = true
 }
 
-func (page *Page) markClean() {
+func (page *Page) MarkClean() {
 	page.dirty = false
 }
 
@@ -154,7 +154,7 @@ func (pager *Pager) SyncPage(id PageID, page *Page) error {
 		return err
 	}
 
-	page.markClean()
+	page.MarkClean()
 	return nil
 }
 
@@ -170,7 +170,7 @@ func (pager *Pager) SyncMetadata() error {
 		return err
 	}
 
-	page.markClean()
+	page.MarkClean()
 	return nil
 }
 

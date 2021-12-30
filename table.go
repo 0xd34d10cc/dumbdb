@@ -6,23 +6,35 @@ import (
 	"os"
 )
 
-type DataPage struct {
+// TODO: actually aquire a lock here
+type LockedPage struct {
+	initialRows uint16
+	wasDirty    bool
+
 	nRows uint16
 	id    PageID
 	page  *Page
 }
 
-func ReadDataPage(id PageID, page *Page) DataPage {
+func LockPage(id PageID, page *Page) LockedPage {
 	nRows := binary.LittleEndian.Uint16(page.Data()[:2])
-	return DataPage{
+	return LockedPage{
+		initialRows: nRows,
+		wasDirty:    page.IsDirty(),
+
 		nRows: nRows,
 		id:    id,
 		page:  page,
 	}
 }
 
+func (p *LockedPage) Unlock() {
+	// TODO: implement
+}
+
 // Returns true on success
-func (p *DataPage) TryInsert(row Row, schema *Schema) bool {
+// NOTE: inserts are not applied until Commit() is called
+func (p *LockedPage) TryInsert(row Row, schema *Schema) bool {
 	offset := 2 + schema.RowSize()*int(p.nRows)
 	if offset+schema.RowSize() > len(p.page.Data()) {
 		return false
@@ -34,9 +46,24 @@ func (p *DataPage) TryInsert(row Row, schema *Schema) bool {
 	}
 
 	p.nRows += 1
-	binary.LittleEndian.PutUint16(p.page.Data(), p.nRows)
-	p.page.MarkDirty()
 	return true
+}
+
+// Commit inserts into memory
+func (p *LockedPage) Commit() {
+	if p.nRows != p.initialRows {
+		binary.LittleEndian.PutUint16(p.page.Data(), p.nRows)
+		p.page.MarkDirty()
+	}
+}
+
+func (p *LockedPage) Rollback() {
+	if p.nRows != p.initialRows {
+		binary.LittleEndian.PutUint16(p.page.Data(), p.initialRows)
+		if !p.wasDirty {
+			p.page.MarkClean()
+		}
+	}
 }
 
 type Table struct {
@@ -79,22 +106,43 @@ func initTable(name string, fields []FieldDescription, isNew bool) (*Table, erro
 	}, nil
 }
 
-// TODO: make it atomic
+// Returns number of pages successfully inserted
+func (table *Table) insertInto(id PageID, rows []Row) (int, error) {
+	page, err := table.pager.FetchPage(id)
+	if err != nil {
+		return 0, err
+	}
+
+	i := 0
+	lockedPage := LockPage(id, page)
+	defer lockedPage.Unlock()
+	for i < len(rows) && lockedPage.TryInsert(rows[i], &table.schema) {
+		i++
+	}
+
+	if i != 0 {
+		lockedPage.Commit()
+		err := table.pager.SyncPage(id, page)
+		if err != nil {
+			lockedPage.Rollback()
+			return 0, err
+		}
+	}
+
+	return i, nil
+}
+
+// TODO: make it atomic globally, not only inside a single page
 func (table *Table) Insert(rows []Row) error {
 	i := 0
 	// first try inserting into existing pages
 	for id := table.pager.FirstPage(); id != InvalidPageID; id = table.pager.NextPage(id) {
-		page, err := table.pager.FetchPage(id)
+		n, err := table.insertInto(id, rows[i:])
 		if err != nil {
 			return err
 		}
 
-		dataPage := ReadDataPage(id, page)
-		for i < len(rows) && dataPage.TryInsert(rows[i], &table.schema) {
-			i++
-			// TODO: sync page?
-		}
-
+		i += n
 		if i == len(rows) {
 			return nil
 		}
@@ -107,17 +155,12 @@ func (table *Table) Insert(rows []Row) error {
 			return err
 		}
 
-		page, err := table.pager.FetchPage(id)
+		n, err := table.insertInto(id, rows[i:])
 		if err != nil {
 			return err
 		}
 
-		dataPage := ReadDataPage(id, page)
-		for i < len(rows) && dataPage.TryInsert(rows[i], &table.schema) {
-			i++
-			// TODO: sync page?
-		}
-
+		i += n
 		if i == len(rows) {
 			return nil
 		}
