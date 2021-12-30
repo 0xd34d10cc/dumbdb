@@ -51,8 +51,8 @@ func (f *FieldDescription) String() string {
 }
 
 type Create struct {
-	Name   string              `"create" "table" @Ident`
-	Fields []*FieldDescription `"(" @@ ("," @@)*  ")"`
+	Name   string             `"create" "table" @Ident`
+	Fields []FieldDescription `"(" @@ ("," @@)*  ")"`
 }
 
 func (q *Create) String() string {
@@ -95,7 +95,7 @@ var parser = participle.MustBuild(&Query{},
 	participle.Unquote("String"),
 )
 
-func Parse(query string) (*Query, error) {
+func ParseQuery(query string) (*Query, error) {
 	q := &Query{}
 	err := parser.ParseString("", query, q)
 	if err != nil {
