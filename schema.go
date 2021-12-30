@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"strconv"
@@ -55,13 +56,27 @@ func (field *Field) Read(data []byte) Value {
 	}
 	switch field.typeID {
 	case TypeInt:
-		v.Int = int32(data[0]) | int32(data[1])<<8 | int32(data[2])<<16 | int32(data[3])<<24
+		v.Int = int32(binary.LittleEndian.Uint32(data[:4]))
 	case TypeVarchar:
 		v.Str = string(data[:field.len])
 	default:
 		panic("unhandled type id")
 	}
 	return v
+}
+
+func (field *Field) Write(data []byte, val Value) {
+	switch val.TypeID {
+	case TypeInt:
+		binary.LittleEndian.PutUint32(data, uint32(val.Int))
+	case TypeVarchar:
+		copy(data, []byte(val.Str))
+		for i := len(val.Str); i < int(field.len); i++ {
+			data[i] = 0
+		}
+	default:
+		panic("unhandled type id")
+	}
 }
 
 type Value struct {
@@ -118,6 +133,10 @@ func NewSchema(desc []FieldDescription) Schema {
 	}
 }
 
+func (schema *Schema) RowSize() int {
+	return schema.totalLen
+}
+
 // Check whether row matches the schema, returns nil on success
 func (schema *Schema) Typecheck(row Row) error {
 	if len(schema.fields) != len(row) {
@@ -134,14 +153,31 @@ func (schema *Schema) Typecheck(row Row) error {
 	return nil
 }
 
-func (schema *Schema) ReadRow(data []byte) Row {
-	row := make([]Value, 0, len(schema.fields))
+func (schema *Schema) ReadRow(data []byte, row *Row) error {
+	if len(data) < schema.totalLen {
+		return errors.New("not enough data")
+	}
+
 	offset := 0
 	for _, field := range schema.fields {
 		val := field.Read(data[offset:])
-		row = append(row, val)
+		*row = append(*row, val)
 		offset += int(field.len)
 	}
 
-	return row
+	return nil
+}
+
+func (schema *Schema) WriteRow(dst []byte, row Row) error {
+	if len(dst) < schema.totalLen {
+		return errors.New("not enough space")
+	}
+
+	offset := 0
+	for i, field := range schema.fields {
+		field.Write(dst[offset:], row[i])
+		offset += int(field.len)
+	}
+
+	return nil
 }

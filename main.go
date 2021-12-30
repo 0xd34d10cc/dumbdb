@@ -10,6 +10,7 @@ import (
 func main() {
 	db := NewDatabase()
 	defer db.Close()
+
 	rl, err := readline.New("> ")
 	if err != nil {
 		log.Fatal("Failed to initialize readline", err)
