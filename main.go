@@ -14,12 +14,12 @@ func main() {
 		log.Fatal("Failed to create db file:", err)
 	}
 
-	pool, err := NewBufferPool(dbFile)
+	pager, err := NewPager(dbFile)
 	if err != nil {
 		log.Fatal("Faield to create buffer pool:", err)
 	}
 	defer func() {
-		err := pool.SyncAll()
+		err := pager.SyncAll()
 		if err != nil {
 			log.Println("Failed to sync pages:", err)
 		}

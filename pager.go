@@ -56,7 +56,7 @@ func (page *Page) markClean() {
 }
 
 // Manages pool of pages in memory abstracting away details of file storage
-type BufferPool struct {
+type Pager struct {
 	storage     Storage
 	storageSize int64
 	memory      map[PageID]*Page
@@ -64,8 +64,8 @@ type BufferPool struct {
 	index *Page
 }
 
-// Create a new buffer pool backed by storage
-func NewBufferPool(storage Storage) (*BufferPool, error) {
+// Create a new pager backed by storage
+func NewPager(storage Storage) (*Pager, error) {
 	storageSize, err := storage.Seek(0, io.SeekEnd)
 	if err != nil {
 		return nil, err
@@ -75,46 +75,46 @@ func NewBufferPool(storage Storage) (*BufferPool, error) {
 		return nil, ErrInvalidStorageSize
 	}
 
-	pool := &BufferPool{
+	pager := &Pager{
 		storage:     storage,
 		storageSize: storageSize,
 		memory:      make(map[PageID]*Page),
 		index:       nil,
 	}
 
-	pool.index, err = pool.readPageAt(0)
+	pager.index, err = pager.readPageAt(0)
 	if err != nil {
 		return nil, err
 	}
 
-	return pool, nil
+	return pager, nil
 }
 
 // Obtain a page by id
-func (pool *BufferPool) FetchPage(id PageID) (*Page, error) {
+func (pager *Pager) FetchPage(id PageID) (*Page, error) {
 	// first check the memory cache
-	page, ok := pool.memory[id]
+	page, ok := pager.memory[id]
 	if ok {
 		return page, nil
 	}
 
 	// read from the disk
-	page, err := pool.readPage(id)
+	page, err := pager.readPage(id)
 	if err != nil {
 		return nil, err
 	}
 
-	pool.putInPool(id, page)
+	pager.putInPool(id, page)
 	return page, nil
 }
 
 // Allocate a new page on the disk, this only changes the metadata
-func (pool *BufferPool) AllocatePage() (PageID, error) {
+func (pager *Pager) AllocatePage() (PageID, error) {
 	// Check metadata for free pages to reuse
-	for id := 0; id < len(pool.index.data); id++ {
-		if !pool.isPageAllocated(PageID(id)) {
+	for id := 0; id < len(pager.index.data); id++ {
+		if !pager.isPageAllocated(PageID(id)) {
 			// page 0 is reserved for metadata
-			pool.markAllocated(PageID(id))
+			pager.markAllocated(PageID(id))
 			return PageID(id), nil
 		}
 	}
@@ -123,33 +123,33 @@ func (pool *BufferPool) AllocatePage() (PageID, error) {
 }
 
 // Mark page as deallocated, this only changes the metadata
-func (pool *BufferPool) DeallocatePage(id PageID) {
+func (pager *Pager) DeallocatePage(id PageID) {
 	// remove from memory
-	delete(pool.memory, id)
+	delete(pager.memory, id)
 
 	// mark as deallocated
-	pool.markDeallocated(id)
+	pager.markDeallocated(id)
 }
 
 // Flush page to disk by id
-func (pool *BufferPool) SyncPageByID(id PageID) error {
-	page, ok := pool.memory[id]
+func (pager *Pager) SyncPageByID(id PageID) error {
+	page, ok := pager.memory[id]
 	if !ok {
 		// page is not cached, nothing to sync
 		return nil
 	}
 
-	return pool.SyncPage(id, page)
+	return pager.SyncPage(id, page)
 }
 
 // Flush page to disk
-func (pool *BufferPool) SyncPage(id PageID, page *Page) error {
+func (pager *Pager) SyncPage(id PageID, page *Page) error {
 	if !page.IsDirty() {
 		// no changes in page, nothing to sync
 		return nil
 	}
 
-	err := pool.writePage(id, page)
+	err := pager.writePage(id, page)
 	if err != nil {
 		return err
 	}
@@ -159,13 +159,13 @@ func (pool *BufferPool) SyncPage(id PageID, page *Page) error {
 }
 
 // Flush all metadata pages to the disk
-func (pool *BufferPool) SyncMetadata() error {
-	page := pool.index
+func (pager *Pager) SyncMetadata() error {
+	page := pager.index
 	if !page.IsDirty() {
 		return nil
 	}
 
-	err := pool.writePageAt(0, page)
+	err := pager.writePageAt(0, page)
 	if err != nil {
 		return err
 	}
@@ -175,14 +175,14 @@ func (pool *BufferPool) SyncMetadata() error {
 }
 
 // Flush all the pages to the disk
-func (pool *BufferPool) SyncAll() error {
-	err := pool.SyncMetadata()
+func (pager *Pager) SyncAll() error {
+	err := pager.SyncMetadata()
 	if err != nil {
 		return err
 	}
 
-	for id, page := range pool.memory {
-		err = pool.SyncPage(id, page)
+	for id, page := range pager.memory {
+		err = pager.SyncPage(id, page)
 		if err != nil {
 			return err
 		}
@@ -192,14 +192,14 @@ func (pool *BufferPool) SyncAll() error {
 }
 
 // Get ID of the first page. Returns InvalidPageID if db is empty
-func (pool *BufferPool) FirstPage() PageID {
+func (pager *Pager) FirstPage() PageID {
 	id := PageID(^uint32(0)) // uint32(-1)
-	return pool.NextPage(id)
+	return pager.NextPage(id)
 }
 
-func (pool *BufferPool) NextPage(pid PageID) PageID {
-	for id := int(pid + 1); id < len(pool.index.data); id++ {
-		if pool.isPageAllocated(PageID(id)) {
+func (pager *Pager) NextPage(pid PageID) PageID {
+	for id := int(pid + 1); id < len(pager.index.data); id++ {
+		if pager.isPageAllocated(PageID(id)) {
 			return PageID(id)
 		}
 	}
@@ -207,40 +207,40 @@ func (pool *BufferPool) NextPage(pid PageID) PageID {
 }
 
 // Check whether or not page is allocated according to the metadata
-func (pool *BufferPool) isPageAllocated(id PageID) bool {
+func (pager *Pager) isPageAllocated(id PageID) bool {
 	slotOffset := int(id)
-	if slotOffset >= len(pool.index.data) {
+	if slotOffset >= len(pager.index.data) {
 		// Out of bounds
 		return false
 	}
-	return pool.index.data[slotOffset] == 1
+	return pager.index.data[slotOffset] == 1
 }
 
 // Mark page as allocated
-func (pool *BufferPool) markAllocated(id PageID) {
-	if !pool.isPageAllocated(id) {
-		pool.index.data[int(id)] = 1
-		pool.index.MarkDirty()
+func (pager *Pager) markAllocated(id PageID) {
+	if !pager.isPageAllocated(id) {
+		pager.index.data[int(id)] = 1
+		pager.index.MarkDirty()
 	}
 }
 
 // Mark page as free
-func (pool *BufferPool) markDeallocated(id PageID) {
-	if pool.isPageAllocated(id) {
-		pool.index.data[int(id)] = 0
-		pool.index.MarkDirty()
+func (pager *Pager) markDeallocated(id PageID) {
+	if pager.isPageAllocated(id) {
+		pager.index.data[int(id)] = 0
+		pager.index.MarkDirty()
 	}
 }
 
-// Put a page in memory pool, evicting if neccesarry
-func (pool *BufferPool) putInPool(id PageID, page *Page) {
+// Put a page in memory pager, evicting if neccesarry
+func (pager *Pager) putInPool(id PageID, page *Page) {
 	// TODO: add upper limit on number of pages in memory
-	pool.memory[id] = page
+	pager.memory[id] = page
 }
 
 // Map page id to file offset
-func (pool *BufferPool) offsetFromID(id PageID) (int64, error) {
-	if !pool.isPageAllocated(id) {
+func (pager *Pager) offsetFromID(id PageID) (int64, error) {
+	if !pager.isPageAllocated(id) {
 		return 0, ErrPageNotAllocated
 	}
 
@@ -249,24 +249,24 @@ func (pool *BufferPool) offsetFromID(id PageID) (int64, error) {
 }
 
 // Allocate empty page in memory
-func (pool *BufferPool) allocateMemoryPage() *Page {
-	// TODO: use a fixed pool of N (fixed) + K (allocation request limit) pages
+func (pager *Pager) allocateMemoryPage() *Page {
+	// TODO: use a fixed pager of N (fixed) + K (allocation request limit) pages
 	return &Page{}
 }
 
 // Read page at offset
-func (pool *BufferPool) readPageAt(offset int64) (*Page, error) {
-	if offset >= pool.storageSize {
+func (pager *Pager) readPageAt(offset int64) (*Page, error) {
+	if offset >= pager.storageSize {
 		newSize := offset + int64(PageSize)
-		err := pool.storage.Truncate(newSize)
+		err := pager.storage.Truncate(newSize)
 		if err != nil {
 			return nil, err
 		}
-		pool.storageSize = newSize
+		pager.storageSize = newSize
 	}
 
-	page := pool.allocateMemoryPage()
-	_, err := pool.storage.ReadAt(page.data[:], offset)
+	page := pager.allocateMemoryPage()
+	_, err := pager.storage.ReadAt(page.data[:], offset)
 	if err != nil {
 		return nil, err
 	}
@@ -274,27 +274,27 @@ func (pool *BufferPool) readPageAt(offset int64) (*Page, error) {
 }
 
 // Read page from the disk
-func (pool *BufferPool) readPage(id PageID) (*Page, error) {
-	offset, err := pool.offsetFromID(id)
+func (pager *Pager) readPage(id PageID) (*Page, error) {
+	offset, err := pager.offsetFromID(id)
 	if err != nil {
 		return nil, err
 	}
 
-	return pool.readPageAt(offset)
+	return pager.readPageAt(offset)
 }
 
 // Write page at offset
-func (pool *BufferPool) writePageAt(offset int64, page *Page) error {
-	_, err := pool.storage.WriteAt(page.data[:], offset)
+func (pager *Pager) writePageAt(offset int64, page *Page) error {
+	_, err := pager.storage.WriteAt(page.data[:], offset)
 	return err
 }
 
 // Write page to the disk
-func (pool *BufferPool) writePage(id PageID, page *Page) error {
-	offset, err := pool.offsetFromID(id)
+func (pager *Pager) writePage(id PageID, page *Page) error {
+	offset, err := pager.offsetFromID(id)
 	if err != nil {
 		return err
 	}
 
-	return pool.writePageAt(offset, page)
+	return pager.writePageAt(offset, page)
 }
