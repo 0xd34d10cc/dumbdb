@@ -3,6 +3,7 @@ module db
 go 1.16
 
 require (
+	github.com/alecthomas/participle/v2 v2.0.0-alpha7
 	github.com/chzyer/logex v1.2.0 // indirect
 	github.com/chzyer/readline v0.0.0-20180603132655-2972be24d48e
 	github.com/chzyer/test v0.0.0-20210722231415-061457976a23 // indirect

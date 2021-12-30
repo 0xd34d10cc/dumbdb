@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"os"
 
@@ -13,6 +12,7 @@ func main() {
 	if err != nil {
 		log.Fatal("Failed to create db file:", err)
 	}
+	defer dbFile.Close()
 
 	pager, err := NewPager(dbFile)
 	if err != nil {
@@ -37,16 +37,12 @@ func main() {
 			break
 		}
 
-		fmt.Println("got it:", line)
+		query, err := Parse(line)
+		if err != nil {
+			log.Println("Failed to parse query:", err)
+			continue
+		}
+
+		log.Println("Parsed:", query)
 	}
-
-	// id, err := pool.AllocatePage()
-	// if err != nil {
-	// 	log.Fatal("Failed to allocate page:", err)
-	// }
-
-	// log.Println("Allocated page at:", id)
-	// for id = pool.FirstPage(); id != InvalidPageID; id = pool.NextPage(id) {
-	// 	log.Println("Allocated page:", id)
-	// }
 }
