@@ -11,11 +11,9 @@ type Storage interface {
 	io.WriterAt
 	io.Seeker
 
-	Sync() error
 	Truncate(size int64) error
 }
 
-// type RowID struct { PageID, SlotID }
 type PageID uint32
 
 const PageSize uint32 = 4096
@@ -56,6 +54,7 @@ func (page *Page) MarkClean() {
 }
 
 // Manages pool of pages in memory abstracting away details of file storage
+// TODO: make it safe for concurrent use
 type Pager struct {
 	storage     Storage
 	storageSize int64

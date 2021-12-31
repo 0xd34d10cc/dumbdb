@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/olekukonko/tablewriter"
 )
 
 type Result struct {
@@ -17,18 +19,19 @@ func (result *Result) String() string {
 	}
 
 	var s strings.Builder
-	for _, field := range result.schema.fields {
-		s.WriteString(field.name)
-		s.WriteByte('\t')
-	}
+	writer := tablewriter.NewWriter(&s)
+	writer.SetHeader(result.schema.ColumnNames())
 
+	text := make([]string, 0, 3)
 	for _, row := range result.rows {
 		for _, field := range row {
-			s.WriteString(field.String())
-			s.WriteByte('\n')
+			text = append(text, field.String())
 		}
-	}
 
+		writer.Append(text)
+		text = text[:0]
+	}
+	writer.Render()
 	return s.String()
 }
 

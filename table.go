@@ -82,7 +82,9 @@ func OpenTable(name string, fields []FieldDescription) (*Table, error) {
 
 func initTable(name string, fields []FieldDescription, isNew bool) (*Table, error) {
 	schema := NewSchema(fields)
-	flags := os.O_RDWR | os.O_CREATE
+	// TODO: consider O_DIRECT, see https://github.com/ncw/directio
+	// TODO: check whether WriteAt() is atomic if writes are aligned to page size
+	flags := os.O_RDWR | os.O_CREATE | os.O_SYNC
 	if isNew {
 		flags |= os.O_EXCL
 	}

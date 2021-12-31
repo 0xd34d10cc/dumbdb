@@ -137,6 +137,14 @@ func (schema *Schema) RowSize() int {
 	return schema.totalLen
 }
 
+func (schema *Schema) ColumnNames() []string {
+	names := make([]string, 0, len(schema.fields))
+	for _, field := range schema.fields {
+		names = append(names, field.name)
+	}
+	return names
+}
+
 // Check whether row matches the schema, returns nil on success
 func (schema *Schema) Typecheck(row Row) error {
 	if len(schema.fields) != len(row) {
