@@ -3,14 +3,15 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/chzyer/readline"
 )
 
 func main() {
-	dataDir := "."
-	if len(os.Args) > 2 {
+	dataDir, err := os.Getwd()
+	if len(os.Args) > 2 || len(os.Args) != 2 && err != nil {
 		fmt.Println("Usage: db <data dir>")
 		return
 	}
@@ -31,7 +32,10 @@ func main() {
 		}
 	}()
 
-	rl, err := readline.New("> ")
+	rl, err := readline.NewEx(&readline.Config{
+		Prompt:      "> ",
+		HistoryFile: filepath.Join(dataDir, "history.txt"),
+	})
 	if err != nil {
 		fmt.Println("Failed to initialize readline", err)
 		return
@@ -59,6 +63,11 @@ func main() {
 		if err != nil {
 			fmt.Println("Failed to process query:", err)
 			continue
+		}
+
+		err = rl.SaveHistory(line)
+		if err != nil {
+			fmt.Println("Failed to save history:", err)
 		}
 
 		if result != nil {

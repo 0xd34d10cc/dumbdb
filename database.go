@@ -12,6 +12,12 @@ import (
 	"github.com/olekukonko/tablewriter"
 )
 
+var (
+	ErrTableAlreadyExist = errors.New("table with such name already exist")
+	ErrNoSuchTable       = errors.New("no table with such name")
+	ErrUnhandledQuery    = errors.New("unhandled query")
+)
+
 type Result struct {
 	schema Schema
 	rows   []Row
@@ -108,7 +114,7 @@ func (db *Database) Execute(query *Query) (*Result, error) {
 		create := query.Create
 		_, ok := db.tables[create.Table]
 		if ok {
-			return nil, errors.New("table with such name already exist")
+			return nil, ErrTableAlreadyExist
 		}
 
 		schema := NewSchema(create.Fields)
@@ -127,7 +133,7 @@ func (db *Database) Execute(query *Query) (*Result, error) {
 		insert := query.Insert
 		table, ok := db.tables[insert.Table]
 		if !ok {
-			return nil, errors.New("no table with such name")
+			return nil, ErrNoSuchTable
 		}
 
 		rows := ConvertRows(insert.Rows)
@@ -146,7 +152,7 @@ func (db *Database) Execute(query *Query) (*Result, error) {
 		q := query.Select
 		table, ok := db.tables[q.Table]
 		if !ok {
-			return nil, errors.New("no table with such name")
+			return nil, ErrNoSuchTable
 		}
 
 		rows, err := table.SelectAll()
@@ -159,7 +165,7 @@ func (db *Database) Execute(query *Query) (*Result, error) {
 			rows:   rows,
 		}, nil
 	default:
-		return nil, errors.New("unhandled query")
+		return nil, ErrUnhandledQuery
 	}
 
 	return nil, nil
