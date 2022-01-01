@@ -9,32 +9,10 @@ import (
 	"github.com/chzyer/readline"
 )
 
-func main() {
-	dataDir, err := os.Getwd()
-	if len(os.Args) > 2 || len(os.Args) != 2 && err != nil {
-		fmt.Println("Usage: db <data dir>")
-		return
-	}
-
-	if len(os.Args) == 2 {
-		dataDir = os.Args[1]
-	}
-
-	db, err := NewDatabase(dataDir)
-	if err != nil {
-		fmt.Println("Failed to initialize database:", err)
-		return
-	}
-	defer func() {
-		err := db.Close()
-		if err != nil {
-			fmt.Println("Failed to close db:", err)
-		}
-	}()
-
+func RunCLI(history string, db *Database) {
 	rl, err := readline.NewEx(&readline.Config{
 		Prompt:      "> ",
-		HistoryFile: filepath.Join(dataDir, "history.txt"),
+		HistoryFile: history,
 	})
 	if err != nil {
 		fmt.Println("Failed to initialize readline", err)
@@ -65,13 +43,35 @@ func main() {
 			continue
 		}
 
-		err = rl.SaveHistory(line)
-		if err != nil {
-			fmt.Println("Failed to save history:", err)
-		}
-
 		if result != nil {
 			result.FormatTable(os.Stdout)
 		}
 	}
+}
+
+func main() {
+	dataDir, err := os.Getwd()
+	if len(os.Args) > 2 || len(os.Args) != 2 && err != nil {
+		fmt.Println("Usage: db <data dir>")
+		return
+	}
+
+	if len(os.Args) == 2 {
+		dataDir = os.Args[1]
+	}
+
+	db, err := NewDatabase(dataDir)
+	if err != nil {
+		fmt.Println("Failed to initialize database:", err)
+		return
+	}
+	defer func() {
+		err := db.Close()
+		if err != nil {
+			fmt.Println("Failed to close db:", err)
+		}
+	}()
+
+	history := filepath.Join(dataDir, "history.txt")
+	RunCLI(history, db)
 }
