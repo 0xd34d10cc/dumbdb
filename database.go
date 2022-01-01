@@ -1,9 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
+	"os"
+	"path/filepath"
 
 	"github.com/olekukonko/tablewriter"
 )
@@ -29,20 +33,73 @@ func (result *Result) FormatTable(w io.Writer) {
 	writer.Render()
 }
 
+const MetadataFilename string = "metadata.json"
+
 type Database struct {
-	tables map[string]*Table
+	dataDir string
+	tables  map[string]*Table
 }
 
-func NewDatabase() *Database {
-	return &Database{
-		tables: make(map[string]*Table),
+func NewDatabase(dataDir string) (*Database, error) {
+	db := &Database{
+		dataDir: dataDir,
+		tables:  make(map[string]*Table),
 	}
+
+	data, err := ioutil.ReadFile(filepath.Join(dataDir, MetadataFilename))
+	if os.IsNotExist(err) {
+		return db, nil
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	var metadata map[string]Schema
+	err = json.Unmarshal(data, &metadata)
+	if err != nil {
+		return nil, err
+	}
+
+	for name, schema := range metadata {
+		table, err := OpenTable(filepath.Join(dataDir, name), schema)
+		if err != nil {
+			return nil, err
+		}
+		db.tables[name] = table
+	}
+
+	return db, nil
 }
 
-func (db *Database) Close() {
+func (db *Database) Close() error {
+	err := db.saveMetadata()
+	if err != nil {
+		return err
+	}
+
 	for _, table := range db.tables {
-		table.Close()
+		err = table.Close()
+		if err != nil {
+			return err
+		}
 	}
+
+	return nil
+}
+
+func (db *Database) saveMetadata() error {
+	metadata := make(map[string]Schema)
+	for name, table := range db.tables {
+		metadata[name] = table.schema
+	}
+
+	data, err := json.Marshal(metadata)
+	if err != nil {
+		return err
+	}
+
+	return ioutil.WriteFile(filepath.Join(db.dataDir, MetadataFilename), data, 0600)
 }
 
 func (db *Database) Execute(query *Query) (*Result, error) {
@@ -54,12 +111,18 @@ func (db *Database) Execute(query *Query) (*Result, error) {
 			return nil, errors.New("table with such name already exist")
 		}
 
-		table, err := NewTable(create.Table, create.Fields)
+		schema := NewSchema(create.Fields)
+		table, err := NewTable(create.Table, schema)
 		if err != nil {
 			return nil, err
 		}
 
 		db.tables[create.Table] = table
+		err = db.saveMetadata()
+		if err != nil {
+			delete(db.tables, create.Table)
+			return nil, err
+		}
 	case query.Insert != nil:
 		insert := query.Insert
 		table, ok := db.tables[insert.Table]

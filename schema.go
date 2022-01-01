@@ -26,22 +26,22 @@ func (t TypeID) String() string {
 }
 
 type Field struct {
-	name   string
-	typeID TypeID
-	len    uint8
+	Name   string `json:"name"`
+	TypeID TypeID `json:"type_id"`
+	Len    uint8  `json:"len"`
 }
 
 func (field *Field) Typecheck(v *Value) error {
-	if field.typeID != v.TypeID {
-		return fmt.Errorf("unexpected type for %v (expected %v, got %v)", field.name, field.typeID, v.TypeID)
+	if field.TypeID != v.TypeID {
+		return fmt.Errorf("unexpected type for %v (expected %v, got %v)", field.Name, field.TypeID, v.TypeID)
 	}
 
-	switch field.typeID {
+	switch field.TypeID {
 	case TypeInt:
 		// nothing
 	case TypeVarchar:
-		if len(v.Str) > int(field.len) {
-			return fmt.Errorf("value for %v is too long (%v is max)", field.name, field.len)
+		if len(v.Str) > int(field.Len) {
+			return fmt.Errorf("value for %v is too long (%v is max)", field.Name, field.Len)
 		}
 	default:
 		panic("unhandled type id")
@@ -52,13 +52,13 @@ func (field *Field) Typecheck(v *Value) error {
 
 func (field *Field) Read(data []byte) Value {
 	v := Value{
-		TypeID: field.typeID,
+		TypeID: field.TypeID,
 	}
-	switch field.typeID {
+	switch field.TypeID {
 	case TypeInt:
 		v.Int = int32(binary.LittleEndian.Uint32(data[:4]))
 	case TypeVarchar:
-		v.Str = string(data[:field.len])
+		v.Str = string(data[:field.Len])
 	default:
 		panic("unhandled type id")
 	}
@@ -71,7 +71,7 @@ func (field *Field) Write(data []byte, val Value) {
 		binary.LittleEndian.PutUint32(data, uint32(val.Int))
 	case TypeVarchar:
 		copy(data, []byte(val.Str))
-		for i := len(val.Str); i < int(field.len); i++ {
+		for i := len(val.Str); i < int(field.Len); i++ {
 			data[i] = 0
 		}
 	default:
@@ -110,8 +110,8 @@ func (val *Value) String() string {
 type Row []Value
 
 type Schema struct {
-	fields   []Field
-	totalLen int
+	Fields   []Field `json:"fields"`
+	TotalLen int     `json:"total_len"`
 }
 
 func NewSchema(desc []FieldDescription) Schema {
@@ -119,48 +119,48 @@ func NewSchema(desc []FieldDescription) Schema {
 	fields := make([]Field, 0, len(desc))
 	for _, field := range desc {
 		f := Field{
-			name: field.Name,
+			Name: field.Name,
 		}
 		switch {
 		case field.Type.Integer:
-			f.typeID = TypeInt
-			f.len = 4
+			f.TypeID = TypeInt
+			f.Len = 4
 		case field.Type.Varchar != 0:
-			f.typeID = TypeVarchar
-			f.len = uint8(field.Type.Varchar)
+			f.TypeID = TypeVarchar
+			f.Len = uint8(field.Type.Varchar)
 		default:
 			panic("unhandled type")
 		}
-		totalLen += int(f.len)
+		totalLen += int(f.Len)
 		fields = append(fields, f)
 	}
 
 	return Schema{
-		fields:   fields,
-		totalLen: totalLen,
+		Fields:   fields,
+		TotalLen: totalLen,
 	}
 }
 
 func (schema *Schema) RowSize() int {
-	return schema.totalLen
+	return schema.TotalLen
 }
 
 func (schema *Schema) ColumnNames() []string {
-	names := make([]string, 0, len(schema.fields))
-	for _, field := range schema.fields {
-		names = append(names, field.name)
+	names := make([]string, 0, len(schema.Fields))
+	for _, field := range schema.Fields {
+		names = append(names, field.Name)
 	}
 	return names
 }
 
 // Check whether row matches the schema, returns nil on success
 func (schema *Schema) Typecheck(row Row) error {
-	if len(schema.fields) != len(row) {
+	if len(schema.Fields) != len(row) {
 		return errors.New("number of values doesn't match number of columns")
 	}
 
-	for i := 0; i < len(schema.fields); i++ {
-		err := schema.fields[i].Typecheck(&row[i])
+	for i := 0; i < len(schema.Fields); i++ {
+		err := schema.Fields[i].Typecheck(&row[i])
 		if err != nil {
 			return err
 		}
@@ -170,29 +170,29 @@ func (schema *Schema) Typecheck(row Row) error {
 }
 
 func (schema *Schema) ReadRow(data []byte, row *Row) error {
-	if len(data) < schema.totalLen {
+	if len(data) < schema.TotalLen {
 		return errors.New("not enough data")
 	}
 
 	offset := 0
-	for _, field := range schema.fields {
+	for _, field := range schema.Fields {
 		val := field.Read(data[offset:])
 		*row = append(*row, val)
-		offset += int(field.len)
+		offset += int(field.Len)
 	}
 
 	return nil
 }
 
 func (schema *Schema) WriteRow(dst []byte, row Row) error {
-	if len(dst) < schema.totalLen {
+	if len(dst) < schema.TotalLen {
 		return errors.New("not enough space")
 	}
 
 	offset := 0
-	for i, field := range schema.fields {
+	for i, field := range schema.Fields {
 		field.Write(dst[offset:], row[i])
-		offset += int(field.len)
+		offset += int(field.Len)
 	}
 
 	return nil

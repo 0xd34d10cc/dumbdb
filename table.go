@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/binary"
-	"log"
 	"os"
 )
 
@@ -40,7 +39,7 @@ func (p *LockedPage) ReadRow(idx int, schema *Schema) Row {
 		return nil
 	}
 
-	row := make(Row, 0, len(schema.fields))
+	row := make(Row, 0, len(schema.Fields))
 	err := schema.ReadRow(p.page.Data()[offset:], &row)
 	if err != nil {
 		return nil
@@ -91,17 +90,16 @@ type Table struct {
 }
 
 // Create a new table
-func NewTable(name string, fields []FieldDescription) (*Table, error) {
-	return initTable(name, fields, true)
+func NewTable(path string, schema Schema) (*Table, error) {
+	return initTable(path, schema, true)
 }
 
 // Open existing table
-func OpenTable(name string, fields []FieldDescription) (*Table, error) {
-	return initTable(name, fields, false)
+func OpenTable(path string, schema Schema) (*Table, error) {
+	return initTable(path, schema, false)
 }
 
-func initTable(name string, fields []FieldDescription, isNew bool) (*Table, error) {
-	schema := NewSchema(fields)
+func initTable(path string, schema Schema, isNew bool) (*Table, error) {
 	// TODO: consider O_DIRECT, see https://github.com/ncw/directio
 	// TODO: check whether WriteAt() is atomic if writes are aligned to page size
 	flags := os.O_RDWR | os.O_CREATE | os.O_SYNC
@@ -109,7 +107,7 @@ func initTable(name string, fields []FieldDescription, isNew bool) (*Table, erro
 		flags |= os.O_EXCL
 	}
 
-	file, err := os.OpenFile(name+".bin", flags, 0600)
+	file, err := os.OpenFile(path+".bin", flags, 0600)
 	if err != nil {
 		return nil, err
 	}
@@ -205,10 +203,10 @@ func (table *Table) SelectAll() ([]Row, error) {
 	return rows, nil
 }
 
-func (table *Table) Close() {
+func (table *Table) Close() error {
 	err := table.pager.SyncAll()
 	if err != nil {
-		log.Println("Failed to sync:", err)
+		return err
 	}
-	table.file.Close()
+	return table.file.Close()
 }

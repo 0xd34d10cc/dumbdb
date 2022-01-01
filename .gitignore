@@ -1,4 +1,5 @@
 go.sum
 *.exe
 *.bin
+metadata.json
 notes/

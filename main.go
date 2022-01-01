@@ -2,19 +2,38 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"os"
 
 	"github.com/chzyer/readline"
 )
 
 func main() {
-	db := NewDatabase()
-	defer db.Close()
+	dataDir := "."
+	if len(os.Args) > 2 {
+		fmt.Println("Usage: db <data dir>")
+		return
+	}
+
+	if len(os.Args) == 2 {
+		dataDir = os.Args[1]
+	}
+
+	db, err := NewDatabase(dataDir)
+	if err != nil {
+		fmt.Println("Failed to initialize database:", err)
+		return
+	}
+	defer func() {
+		err := db.Close()
+		if err != nil {
+			fmt.Println("Failed to close db:", err)
+		}
+	}()
 
 	rl, err := readline.New("> ")
 	if err != nil {
-		log.Fatal("Failed to initialize readline", err)
+		fmt.Println("Failed to initialize readline", err)
+		return
 	}
 	defer rl.Close()
 
