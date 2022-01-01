@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/chzyer/readline"
 )
@@ -41,6 +42,11 @@ func main() {
 		line, err := rl.Readline()
 		if err != nil {
 			break
+		}
+
+		line = strings.TrimSpace(line)
+		if len(line) == 0 {
+			continue
 		}
 
 		query, err := ParseQuery(line)
