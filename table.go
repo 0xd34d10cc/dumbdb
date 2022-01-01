@@ -114,7 +114,7 @@ func initTable(name string, fields []FieldDescription, isNew bool) (*Table, erro
 		return nil, err
 	}
 
-	pager, err := NewPager(file)
+	pager, err := NewPager(4096, file)
 	if err != nil {
 		return nil, err
 	}

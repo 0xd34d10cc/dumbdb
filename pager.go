@@ -53,18 +53,25 @@ func (page *Page) MarkClean() {
 	page.dirty = false
 }
 
+type PageCache interface {
+	Get(id PageID) *Page
+	Put(id PageID, page *Page) (PageID, *Page)
+	Remove(id PageID) *Page
+	ForEach(f func(PageID, *Page) bool)
+}
+
 // Manages pool of pages in memory abstracting away details of file storage
 // TODO: make it safe for concurrent use
 type Pager struct {
 	storage     Storage
 	storageSize int64
-	memory      map[PageID]*Page
 
+	cache PageCache
 	index *Page
 }
 
 // Create a new pager backed by storage
-func NewPager(storage Storage) (*Pager, error) {
+func NewPager(maxPages int, storage Storage) (*Pager, error) {
 	storageSize, err := storage.Seek(0, io.SeekEnd)
 	if err != nil {
 		return nil, err
@@ -74,10 +81,11 @@ func NewPager(storage Storage) (*Pager, error) {
 		return nil, ErrInvalidStorageSize
 	}
 
+	cache := NewLRUCache(maxPages)
 	pager := &Pager{
 		storage:     storage,
 		storageSize: storageSize,
-		memory:      make(map[PageID]*Page),
+		cache:       &cache,
 		index:       nil,
 	}
 
@@ -92,8 +100,8 @@ func NewPager(storage Storage) (*Pager, error) {
 // Obtain a page by id
 func (pager *Pager) FetchPage(id PageID) (*Page, error) {
 	// first check the memory cache
-	page, ok := pager.memory[id]
-	if ok {
+	page := pager.cache.Get(id)
+	if page != nil {
 		return page, nil
 	}
 
@@ -124,7 +132,7 @@ func (pager *Pager) AllocatePage() (PageID, error) {
 // Mark page as deallocated, this only changes the metadata
 func (pager *Pager) DeallocatePage(id PageID) {
 	// remove from memory
-	delete(pager.memory, id)
+	pager.cache.Remove(id)
 
 	// mark as deallocated
 	pager.markDeallocated(id)
@@ -132,8 +140,8 @@ func (pager *Pager) DeallocatePage(id PageID) {
 
 // Flush page to disk by id
 func (pager *Pager) SyncPageByID(id PageID) error {
-	page, ok := pager.memory[id]
-	if !ok {
+	page := pager.cache.Get(id)
+	if page == nil {
 		// page is not cached, nothing to sync
 		return nil
 	}
@@ -180,14 +188,12 @@ func (pager *Pager) SyncAll() error {
 		return err
 	}
 
-	for id, page := range pager.memory {
+	pager.cache.ForEach(func(id PageID, page *Page) bool {
 		err = pager.SyncPage(id, page)
-		if err != nil {
-			return err
-		}
-	}
+		return err == nil
+	})
 
-	return nil
+	return err
 }
 
 // Get ID of the first page. Returns InvalidPageID if db is empty
@@ -233,8 +239,10 @@ func (pager *Pager) markDeallocated(id PageID) {
 
 // Put a page in memory pager, evicting if neccesarry
 func (pager *Pager) putInPool(id PageID, page *Page) {
-	// TODO: add upper limit on number of pages in memory
-	pager.memory[id] = page
+	evictedID, evictedPage := pager.cache.Put(id, page)
+	if evictedID != InvalidPageID {
+		pager.SyncPage(evictedID, evictedPage)
+	}
 }
 
 // Map page id to file offset
@@ -245,12 +253,6 @@ func (pager *Pager) offsetFromID(id PageID) (int64, error) {
 
 	// TODO: store offsets in the metadata page
 	return (int64(id) + 1) * int64(PageSize), nil
-}
-
-// Allocate empty page in memory
-func (pager *Pager) allocateMemoryPage() *Page {
-	// TODO: use a fixed pager of N (fixed) + K (allocation request limit) pages
-	return &Page{}
 }
 
 // Read page at offset
@@ -264,7 +266,7 @@ func (pager *Pager) readPageAt(offset int64) (*Page, error) {
 		pager.storageSize = newSize
 	}
 
-	page := pager.allocateMemoryPage()
+	page := &Page{}
 	_, err := pager.storage.ReadAt(page.data[:], offset)
 	if err != nil {
 		return nil, err
