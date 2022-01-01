@@ -125,10 +125,3 @@ func (cache *LRUCache) ForEach(f func(id PageID, page *Page) bool) {
 		}
 	}
 }
-
-/**
- * Your LRUCache object will be instantiated and called as such:
- * obj := Constructor(capacity);
- * param_1 := obj.Get(key);
- * obj.Put(key,value);
- */

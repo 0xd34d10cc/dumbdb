@@ -6,8 +6,6 @@ import (
 	"github.com/alecthomas/participle/v2/lexer"
 )
 
-// A custom lexer for INI files. This illustrates a relatively complex Regexp lexer, as well
-// as use of the Unquote filter, which unquotes string tokens.
 var iniLexer = lexer.MustSimple([]lexer.Rule{
 	{Name: `Ident`, Pattern: `[a-zA-Z][a-zA-Z_\d]*`},
 	{Name: `String`, Pattern: `"(?:\\.|[^"])*"`},
