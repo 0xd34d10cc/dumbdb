@@ -94,7 +94,15 @@ func (val *Value) String() string {
 	case TypeInt:
 		return strconv.FormatInt(int64(val.Int), 10)
 	case TypeVarchar:
-		return val.Str
+		trailingZeros := len(val.Str) - 1
+		for trailingZeros > 0 && val.Str[trailingZeros] == 0 {
+			trailingZeros--
+		}
+
+		if trailingZeros > 0 {
+			trailingZeros++
+		}
+		return val.Str[:trailingZeros]
 	}
 	return "<invalid value>"
 }

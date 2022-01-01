@@ -3,7 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
-	"strings"
+	"io"
 
 	"github.com/olekukonko/tablewriter"
 )
@@ -13,13 +13,8 @@ type Result struct {
 	rows   []Row
 }
 
-func (result *Result) String() string {
-	if result == nil {
-		return "<nil result>"
-	}
-
-	var s strings.Builder
-	writer := tablewriter.NewWriter(&s)
+func (result *Result) FormatTable(w io.Writer) {
+	writer := tablewriter.NewWriter(w)
 	writer.SetHeader(result.schema.ColumnNames())
 
 	text := make([]string, 0, 3)
@@ -32,7 +27,6 @@ func (result *Result) String() string {
 		text = text[:0]
 	}
 	writer.Render()
-	return s.String()
 }
 
 type Database struct {
@@ -55,20 +49,20 @@ func (db *Database) Execute(query *Query) (*Result, error) {
 	switch {
 	case query.Create != nil:
 		create := query.Create
-		_, ok := db.tables[create.Name]
+		_, ok := db.tables[create.Table]
 		if ok {
 			return nil, errors.New("table with such name already exist")
 		}
 
-		table, err := NewTable(create.Name, create.Fields)
+		table, err := NewTable(create.Table, create.Fields)
 		if err != nil {
 			return nil, err
 		}
 
-		db.tables[create.Name] = table
+		db.tables[create.Table] = table
 	case query.Insert != nil:
 		insert := query.Insert
-		table, ok := db.tables[insert.Name]
+		table, ok := db.tables[insert.Table]
 		if !ok {
 			return nil, errors.New("no table with such name")
 		}
@@ -85,6 +79,22 @@ func (db *Database) Execute(query *Query) (*Result, error) {
 		if err != nil {
 			return nil, err
 		}
+	case query.Select != nil:
+		q := query.Select
+		table, ok := db.tables[q.Table]
+		if !ok {
+			return nil, errors.New("no table with such name")
+		}
+
+		rows, err := table.SelectAll()
+		if err != nil {
+			return nil, err
+		}
+
+		return &Result{
+			schema: table.schema,
+			rows:   rows,
+		}, nil
 	default:
 		return nil, errors.New("unhandled query")
 	}

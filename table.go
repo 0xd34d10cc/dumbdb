@@ -6,7 +6,6 @@ import (
 	"os"
 )
 
-// TODO: actually aquire a lock here
 type LockedPage struct {
 	initialRows uint16
 	wasDirty    bool
@@ -15,6 +14,7 @@ type LockedPage struct {
 	page  *Page
 }
 
+// TODO: actually aquire a lock here
 func LockPage(page *Page) LockedPage {
 	nRows := binary.LittleEndian.Uint16(page.Data()[:2])
 	return LockedPage{
@@ -28,6 +28,25 @@ func LockPage(page *Page) LockedPage {
 
 func (p *LockedPage) Unlock() {
 	// TODO: implement
+}
+
+func (p *LockedPage) NumRows() int {
+	return int(p.nRows)
+}
+
+func (p *LockedPage) ReadRow(idx int, schema *Schema) Row {
+	offset := 2 + schema.RowSize()*idx
+	if offset+schema.RowSize() > len(p.page.Data()) {
+		return nil
+	}
+
+	row := make(Row, 0, len(schema.fields))
+	err := schema.ReadRow(p.page.Data()[offset:], &row)
+	if err != nil {
+		return nil
+	}
+
+	return row
 }
 
 // Returns true on success
@@ -65,6 +84,7 @@ func (p *LockedPage) Rollback() {
 }
 
 type Table struct {
+	// TODO: save schema to disk
 	schema Schema
 	file   *os.File
 	pager  *Pager
@@ -165,6 +185,24 @@ func (table *Table) Insert(rows []Row) error {
 			return nil
 		}
 	}
+}
+
+func (table *Table) SelectAll() ([]Row, error) {
+	rows := make([]Row, 0)
+	for id := table.pager.FirstPage(); id != InvalidPageID; id = table.pager.NextPage(id) {
+		page, err := table.pager.FetchPage(id)
+		if err != nil {
+			return nil, err
+		}
+
+		lockedPage := LockPage(page)
+		defer lockedPage.Unlock()
+		for i := 0; i < lockedPage.NumRows(); i++ {
+			row := lockedPage.ReadRow(i, &table.schema)
+			rows = append(rows, row)
+		}
+	}
+	return rows, nil
 }
 
 func (table *Table) Close() {

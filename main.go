@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
 
 	"github.com/chzyer/readline"
 )
@@ -35,6 +36,8 @@ func main() {
 			continue
 		}
 
-		fmt.Println(result)
+		if result != nil {
+			result.FormatTable(os.Stdout)
+		}
 	}
 }

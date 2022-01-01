@@ -29,7 +29,7 @@ type FieldDescription struct {
 }
 
 type Create struct {
-	Name   string             `"create" "table" @Ident`
+	Table  string             `"create" "table" @Ident`
 	Fields []FieldDescription `"(" @@ ("," @@)*  ")"`
 }
 
@@ -77,13 +77,18 @@ func ConvertRows(ptrs []RowPtr) []Row {
 }
 
 type Insert struct {
-	Name string   `"insert" "into" @Ident`
-	Rows []RowPtr `"values" @@ ("," @@)*`
+	Table string   `"insert" "into" @Ident`
+	Rows  []RowPtr `"values" @@ ("," @@)*`
+}
+
+type Select struct {
+	Table string `"select" "*" "from" @Ident`
 }
 
 type Query struct {
 	Create *Create `@@`
 	Insert *Insert `| @@`
+	Select *Select `| @@`
 }
 
 var parser = participle.MustBuild(&Query{},
