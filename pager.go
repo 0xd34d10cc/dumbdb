@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
+	"sync/atomic"
 )
 
 type Storage interface {
@@ -33,12 +35,21 @@ func (id PageID) String() string {
 }
 
 type Page struct {
+	m     sync.Mutex
 	dirty bool
-	data  [PageSize]byte
+	_data [PageSize]byte
+}
+
+func (page *Page) Lock() {
+	page.m.Lock()
+}
+
+func (page *Page) Unlock() {
+	page.m.Unlock()
 }
 
 func (page *Page) Data() []byte {
-	return page.data[:]
+	return page._data[:]
 }
 
 func (page *Page) IsDirty() bool {
@@ -53,6 +64,7 @@ func (page *Page) MarkClean() {
 	page.dirty = false
 }
 
+// NOTE: cache methods have to be thread-safe
 type PageCache interface {
 	Get(id PageID) *Page
 	Put(id PageID, page *Page) (PageID, *Page)
@@ -61,7 +73,6 @@ type PageCache interface {
 }
 
 // Manages pool of pages in memory abstracting away details of file storage
-// TODO: make it safe for concurrent use
 type Pager struct {
 	storage     Storage
 	storageSize int64
@@ -87,6 +98,11 @@ func NewPager(maxPages int, storage Storage) (*Pager, error) {
 		storageSize: storageSize,
 		cache:       &cache,
 		index:       nil,
+	}
+
+	err = pager.ensureSize(int64(PageSize))
+	if err != nil {
+		return nil, err
 	}
 
 	pager.index, err = pager.readPageAt(0)
@@ -117,11 +133,27 @@ func (pager *Pager) FetchPage(id PageID) (*Page, error) {
 
 // Allocate a new page on the disk, this only changes the metadata
 func (pager *Pager) AllocatePage() (PageID, error) {
+	index := pager.index
+	index.Lock()
+	defer index.Unlock()
+
 	// Check metadata for free pages to reuse
-	for id := 0; id < len(pager.index.data); id++ {
-		if !pager.isPageAllocated(PageID(id)) {
-			// page 0 is reserved for metadata
-			pager.markAllocated(PageID(id))
+	nEntries := len(index.Data())
+	for id := 0; id < nEntries; id++ {
+		if !pager.isPageAllocated(index, PageID(id)) {
+			pager.markAllocated(index, PageID(id))
+
+			offset, err := pager.offsetFromID(index, PageID(id))
+			if err != nil {
+				// should only fail if page is not allocated
+				panic(err)
+			}
+
+			err = pager.ensureSize(offset + int64(PageSize))
+			if err != nil {
+				pager.markDeallocated(index, PageID(id))
+				continue
+			}
 			return PageID(id), nil
 		}
 	}
@@ -134,8 +166,11 @@ func (pager *Pager) DeallocatePage(id PageID) {
 	// remove from memory
 	pager.cache.Remove(id)
 
+	index := pager.index
+	index.Lock()
+	defer index.Unlock()
 	// mark as deallocated
-	pager.markDeallocated(id)
+	pager.markDeallocated(index, id)
 }
 
 // Flush page to disk by id
@@ -149,7 +184,7 @@ func (pager *Pager) SyncPageByID(id PageID) error {
 	return pager.SyncPage(id, page)
 }
 
-// Flush page to disk
+// Flush page to disk, page have to be locked
 func (pager *Pager) SyncPage(id PageID, page *Page) error {
 	if !page.IsDirty() {
 		// no changes in page, nothing to sync
@@ -167,17 +202,19 @@ func (pager *Pager) SyncPage(id PageID, page *Page) error {
 
 // Flush all metadata pages to the disk
 func (pager *Pager) SyncMetadata() error {
-	page := pager.index
-	if !page.IsDirty() {
+	index := pager.index
+	index.Lock()
+	defer index.Unlock()
+	if !index.IsDirty() {
 		return nil
 	}
 
-	err := pager.writePageAt(0, page)
+	err := pager.writePageAt(0, index)
 	if err != nil {
 		return err
 	}
 
-	page.MarkClean()
+	index.MarkClean()
 	return nil
 }
 
@@ -203,8 +240,12 @@ func (pager *Pager) FirstPage() PageID {
 }
 
 func (pager *Pager) NextPage(pid PageID) PageID {
-	for id := int(pid + 1); id < len(pager.index.data); id++ {
-		if pager.isPageAllocated(PageID(id)) {
+	index := pager.index
+	index.Lock()
+	defer index.Unlock()
+	nEntries := len(index.Data())
+	for id := int(pid + 1); id < nEntries; id++ {
+		if pager.isPageAllocated(index, PageID(id)) {
 			return PageID(id)
 		}
 	}
@@ -212,28 +253,30 @@ func (pager *Pager) NextPage(pid PageID) PageID {
 }
 
 // Check whether or not page is allocated according to the metadata
-func (pager *Pager) isPageAllocated(id PageID) bool {
+func (pager *Pager) isPageAllocated(index *Page, id PageID) bool {
 	slotOffset := int(id)
-	if slotOffset >= len(pager.index.data) {
+	nEntries := len(index.Data())
+
+	if slotOffset >= nEntries {
 		// Out of bounds
 		return false
 	}
-	return pager.index.data[slotOffset] == 1
+	return index.Data()[slotOffset] == 1
 }
 
 // Mark page as allocated
-func (pager *Pager) markAllocated(id PageID) {
-	if !pager.isPageAllocated(id) {
-		pager.index.data[int(id)] = 1
-		pager.index.MarkDirty()
+func (pager *Pager) markAllocated(index *Page, id PageID) {
+	if !pager.isPageAllocated(index, id) {
+		index.Data()[int(id)] = 1
+		index.MarkDirty()
 	}
 }
 
 // Mark page as free
-func (pager *Pager) markDeallocated(id PageID) {
-	if pager.isPageAllocated(id) {
-		pager.index.data[int(id)] = 0
-		pager.index.MarkDirty()
+func (pager *Pager) markDeallocated(index *Page, id PageID) {
+	if pager.isPageAllocated(index, id) {
+		index.Data()[int(id)] = 0
+		index.MarkDirty()
 	}
 }
 
@@ -246,8 +289,8 @@ func (pager *Pager) putInPool(id PageID, page *Page) {
 }
 
 // Map page id to file offset
-func (pager *Pager) offsetFromID(id PageID) (int64, error) {
-	if !pager.isPageAllocated(id) {
+func (pager *Pager) offsetFromID(index *Page, id PageID) (int64, error) {
+	if !pager.isPageAllocated(index, id) {
 		return 0, ErrPageNotAllocated
 	}
 
@@ -255,19 +298,28 @@ func (pager *Pager) offsetFromID(id PageID) (int64, error) {
 	return (int64(id) + 1) * int64(PageSize), nil
 }
 
+func (pager *Pager) ensureSize(requiredSize int64) error {
+	for {
+		currentSize := atomic.LoadInt64(&pager.storageSize)
+		if currentSize >= requiredSize {
+			return nil
+		}
+
+		err := pager.storage.Truncate(requiredSize)
+		if err != nil {
+			return err
+		}
+
+		if atomic.CompareAndSwapInt64(&pager.storageSize, currentSize, requiredSize) {
+			return nil
+		}
+	}
+}
+
 // Read page at offset
 func (pager *Pager) readPageAt(offset int64) (*Page, error) {
-	if offset >= pager.storageSize {
-		newSize := offset + int64(PageSize)
-		err := pager.storage.Truncate(newSize)
-		if err != nil {
-			return nil, err
-		}
-		pager.storageSize = newSize
-	}
-
 	page := &Page{}
-	_, err := pager.storage.ReadAt(page.data[:], offset)
+	_, err := pager.storage.ReadAt(page.Data(), offset)
 	if err != nil {
 		return nil, err
 	}
@@ -276,7 +328,10 @@ func (pager *Pager) readPageAt(offset int64) (*Page, error) {
 
 // Read page from the disk
 func (pager *Pager) readPage(id PageID) (*Page, error) {
-	offset, err := pager.offsetFromID(id)
+	index := pager.index
+	index.Lock()
+	defer index.Unlock()
+	offset, err := pager.offsetFromID(index, id)
 	if err != nil {
 		return nil, err
 	}
@@ -286,13 +341,16 @@ func (pager *Pager) readPage(id PageID) (*Page, error) {
 
 // Write page at offset
 func (pager *Pager) writePageAt(offset int64, page *Page) error {
-	_, err := pager.storage.WriteAt(page.data[:], offset)
+	_, err := pager.storage.WriteAt(page.Data(), offset)
 	return err
 }
 
 // Write page to the disk
 func (pager *Pager) writePage(id PageID, page *Page) error {
-	offset, err := pager.offsetFromID(id)
+	index := pager.index
+	index.Lock()
+	defer index.Unlock()
+	offset, err := pager.offsetFromID(index, id)
 	if err != nil {
 		return err
 	}

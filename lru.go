@@ -1,5 +1,7 @@
 package main
 
+import "sync"
+
 type LRUNode struct {
 	id   PageID
 	page *Page
@@ -9,6 +11,7 @@ type LRUNode struct {
 }
 
 type LRUCache struct {
+	m            sync.Mutex
 	values       map[PageID]*LRUNode
 	recentlyUsed *LRUNode // most recently used node
 	leastUsed    *LRUNode // least recently used node
@@ -25,6 +28,8 @@ func NewLRUCache(capacity int) LRUCache {
 }
 
 func (cache *LRUCache) Get(id PageID) *Page {
+	cache.m.Lock()
+	defer cache.m.Unlock()
 	node, ok := cache.values[id]
 	if ok {
 		cache.markUsed(node)
@@ -81,6 +86,8 @@ func (cache *LRUCache) detachNode(node *LRUNode) {
 }
 
 func (cache *LRUCache) Put(id PageID, page *Page) (evictedID PageID, evictedPage *Page) {
+	cache.m.Lock()
+	defer cache.m.Unlock()
 	node, ok := cache.values[id]
 	if !ok && len(cache.values) >= cache.capacity {
 		// reuse evicted node allocation
@@ -100,7 +107,7 @@ func (cache *LRUCache) Put(id PageID, page *Page) (evictedID PageID, evictedPage
 		node = &LRUNode{}
 	}
 
-	// insert a new value make it most recently used
+	// insert a new value and make it most recently used
 	node.id = id
 	node.page = page
 	cache.values[id] = node
@@ -109,6 +116,8 @@ func (cache *LRUCache) Put(id PageID, page *Page) (evictedID PageID, evictedPage
 }
 
 func (cache *LRUCache) Remove(id PageID) *Page {
+	cache.m.Lock()
+	defer cache.m.Unlock()
 	node, ok := cache.values[id]
 	if !ok {
 		return nil
@@ -119,6 +128,7 @@ func (cache *LRUCache) Remove(id PageID) *Page {
 }
 
 func (cache *LRUCache) ForEach(f func(id PageID, page *Page) bool) {
+	cache.m.Lock()
 	for node := cache.recentlyUsed; node != nil; node = node.prev {
 		if !f(node.id, node.page) {
 			break

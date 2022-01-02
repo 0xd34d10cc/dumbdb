@@ -15,6 +15,7 @@ type LockedPage struct {
 
 // TODO: actually aquire a lock here
 func LockPage(page *Page) LockedPage {
+	page.Lock()
 	nRows := binary.LittleEndian.Uint16(page.Data()[:2])
 	return LockedPage{
 		initialRows: nRows,
@@ -26,7 +27,7 @@ func LockPage(page *Page) LockedPage {
 }
 
 func (p *LockedPage) Unlock() {
-	// TODO: implement
+	p.page.Unlock()
 }
 
 func (p *LockedPage) NumRows() int {
