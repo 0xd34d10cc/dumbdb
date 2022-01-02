@@ -85,33 +85,27 @@ func (cache *LRUCache) detachNode(node *LRUNode) {
 	}
 }
 
-func (cache *LRUCache) TryPut(id PageID, page *Page) (evictedID PageID, evictedPage *Page) {
+func (cache *LRUCache) Put(id PageID, page *Page) (evictedID PageID, evictedPage *Page) {
 	cache.m.Lock()
 	defer cache.m.Unlock()
 	node, ok := cache.values[id]
 	if ok {
-		// don't replace existing cache entry
-		evictedID = id
+		// entry already exist, reuse it
+		// generally this should never happen
+		evictedID = node.id
 		evictedPage = node.page
-		return
-	}
-
-	if len(cache.values) >= cache.capacity {
+	} else if len(cache.values) >= cache.capacity {
+		// reached max capacity
 		// reuse evicted node allocation
 		node = cache.leastUsed
-		// remove page from cache
 		delete(cache.values, cache.leastUsed.id)
-		// notify caller about eviction
 		evictedID = cache.leastUsed.id
 		evictedPage = cache.leastUsed.page
 	} else {
 		// no eviction
+		node = &LRUNode{}
 		evictedID = InvalidPageID
 		evictedPage = nil
-	}
-
-	if node == nil {
-		node = &LRUNode{}
 	}
 
 	// insert a new value and make it most recently used

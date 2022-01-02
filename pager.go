@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"sync"
 )
@@ -33,10 +35,33 @@ func (id PageID) String() string {
 	return fmt.Sprintf("PageID(%d)", uint32(id))
 }
 
+var pageLocks []sync.Mutex = make([]sync.Mutex, 1024)
+
+func fnv32(val uint32) uint32 {
+	hasher := fnv.New32()
+	var bytes [4]byte
+	binary.LittleEndian.PutUint32(bytes[:], val)
+	hasher.Write(bytes[:])
+	return hasher.Sum32()
+}
+
+func pageIDMutex(id PageID) *sync.Mutex {
+	idx := fnv32(uint32(id)) % uint32(len(pageLocks))
+	return &pageLocks[idx]
+}
+
+func LockPageID(id PageID) {
+	pageIDMutex(id).Lock()
+}
+
+func UnlockPageID(id PageID) {
+	pageIDMutex(id).Unlock()
+}
+
 type Page struct {
 	m     sync.Mutex
 	dirty bool
-	_data [PageSize]byte
+	data  [PageSize]byte
 }
 
 func (page *Page) Lock() {
@@ -48,7 +73,7 @@ func (page *Page) Unlock() {
 }
 
 func (page *Page) Data() []byte {
-	return page._data[:]
+	return page.data[:]
 }
 
 func (page *Page) IsDirty() bool {
@@ -70,16 +95,17 @@ type PageCache interface {
 
 	// try put page into cache
 	// returns:
-	//    (id, existingPage) if page with provided id is already in cache
-	//    (InvalidPageID, nil) on successful insert if cache is not full
+	//    (InvalidPageID, nil) if cache is not full
 	//    (evictedID, evictedPage) otherwise
 	//
-	TryPut(id PageID, page *Page) (PageID, *Page)
+	Put(id PageID, page *Page) (PageID, *Page)
 
 	// remove page from cache
+	// returns removed page, if any
 	Remove(id PageID) *Page
 
 	// run function f for each page in cache
+	// and stop if f() returns false
 	ForEach(f func(PageID, *Page) bool)
 }
 
@@ -126,6 +152,9 @@ func NewPager(maxPages int, storage Storage) (*Pager, error) {
 
 // Obtain a page by id
 func (pager *Pager) FetchPage(id PageID) (*Page, error) {
+	LockPageID(id)
+	defer UnlockPageID(id)
+
 	// first check the memory cache
 	page := pager.cache.Get(id)
 	if page != nil {
@@ -139,13 +168,12 @@ func (pager *Pager) FetchPage(id PageID) (*Page, error) {
 	}
 
 	// put page in cache
-	evictedID, evictedPage := pager.cache.TryPut(id, page)
+	evictedID, evictedPage := pager.cache.Put(id, page)
 	if evictedID != InvalidPageID {
 		if evictedID == id {
-			// other thread read page first, throw away our data and use existing page
-			return evictedPage, nil
+			// SyncPage() will deadlock in this case
+			panic("duplicate page id")
 		}
-
 		err = pager.SyncPage(evictedID, evictedPage)
 	}
 
@@ -160,7 +188,7 @@ func (pager *Pager) AllocatePage() (PageID, error) {
 
 	// Check metadata for free pages to reuse
 	nEntries := len(index.Data())
-	for id := 0; id < nEntries; id++ {
+	for id := 1; id < nEntries; id++ {
 		if !pager.isPageAllocated(index, PageID(id)) {
 			pager.markAllocated(index, PageID(id))
 
@@ -202,6 +230,8 @@ func (pager *Pager) SyncPageByID(id PageID) error {
 		return nil
 	}
 
+	page.Lock()
+	defer page.Unlock()
 	return pager.SyncPage(id, page)
 }
 
@@ -211,6 +241,9 @@ func (pager *Pager) SyncPage(id PageID, page *Page) error {
 		// no changes in page, nothing to sync
 		return nil
 	}
+
+	LockPageID(id)
+	defer UnlockPageID(id)
 
 	err := pager.writePage(id, page)
 	if err != nil {
@@ -226,6 +259,7 @@ func (pager *Pager) SyncMetadata() error {
 	index := pager.index
 	index.Lock()
 	defer index.Unlock()
+
 	if !index.IsDirty() {
 		return nil
 	}
@@ -247,7 +281,9 @@ func (pager *Pager) SyncAll() error {
 	}
 
 	pager.cache.ForEach(func(id PageID, page *Page) bool {
+		page.Lock()
 		err = pager.SyncPage(id, page)
+		page.Unlock()
 		return err == nil
 	})
 
@@ -303,12 +339,16 @@ func (pager *Pager) markDeallocated(index *Page, id PageID) {
 
 // Map page id to file offset
 func (pager *Pager) offsetFromID(index *Page, id PageID) (int64, error) {
+	if id == PageID(0) {
+		// special case for root metadata page
+		return 0, nil
+	}
+
 	if !pager.isPageAllocated(index, id) {
 		return 0, ErrPageNotAllocated
 	}
 
-	// TODO: store offsets in the metadata page
-	return (int64(id) + 1) * int64(PageSize), nil
+	return int64(id) * int64(PageSize), nil
 }
 
 func (pager *Pager) ensureSize(requiredSize int64) error {
@@ -346,7 +386,6 @@ func (pager *Pager) readPage(id PageID) (*Page, error) {
 		return nil, err
 	}
 	index.Unlock()
-
 	return pager.readPageAt(offset)
 }
 

@@ -5,7 +5,7 @@ import (
 	"os"
 )
 
-type LockedPage struct {
+type RowListPage struct {
 	initialRows uint16
 	wasDirty    bool
 
@@ -13,11 +13,10 @@ type LockedPage struct {
 	page  *Page
 }
 
-// TODO: actually aquire a lock here
-func LockPage(page *Page) LockedPage {
+func NewRowListPage(page *Page) RowListPage {
 	page.Lock()
 	nRows := binary.LittleEndian.Uint16(page.Data()[:2])
-	return LockedPage{
+	return RowListPage{
 		initialRows: nRows,
 		wasDirty:    page.IsDirty(),
 
@@ -26,15 +25,15 @@ func LockPage(page *Page) LockedPage {
 	}
 }
 
-func (p *LockedPage) Unlock() {
+func (p *RowListPage) Unlock() {
 	p.page.Unlock()
 }
 
-func (p *LockedPage) NumRows() int {
+func (p *RowListPage) NumRows() int {
 	return int(p.nRows)
 }
 
-func (p *LockedPage) ReadRow(idx int, schema *Schema) Row {
+func (p *RowListPage) ReadRow(idx int, schema *Schema) Row {
 	offset := 2 + schema.RowSize()*idx
 	if offset+schema.RowSize() > len(p.page.Data()) {
 		return nil
@@ -51,7 +50,7 @@ func (p *LockedPage) ReadRow(idx int, schema *Schema) Row {
 
 // Returns true on success
 // NOTE: inserts are not applied until Commit() is called
-func (p *LockedPage) TryInsert(row Row, schema *Schema) bool {
+func (p *RowListPage) TryInsert(row Row, schema *Schema) bool {
 	offset := 2 + schema.RowSize()*int(p.nRows)
 	if offset+schema.RowSize() > len(p.page.Data()) {
 		return false
@@ -67,14 +66,14 @@ func (p *LockedPage) TryInsert(row Row, schema *Schema) bool {
 }
 
 // Commit inserts into memory
-func (p *LockedPage) Commit() {
+func (p *RowListPage) Commit() {
 	if p.nRows != p.initialRows {
 		binary.LittleEndian.PutUint16(p.page.Data(), p.nRows)
 		p.page.MarkDirty()
 	}
 }
 
-func (p *LockedPage) Rollback() {
+func (p *RowListPage) Rollback() {
 	if p.nRows != p.initialRows {
 		binary.LittleEndian.PutUint16(p.page.Data(), p.initialRows)
 		if !p.wasDirty {
@@ -133,7 +132,7 @@ func (table *Table) insertInto(id PageID, rows []Row) (int, error) {
 	}
 
 	i := 0
-	lockedPage := LockPage(page)
+	lockedPage := NewRowListPage(page)
 	defer lockedPage.Unlock()
 	for i < len(rows) && lockedPage.TryInsert(rows[i], &table.schema) {
 		i++
@@ -194,7 +193,7 @@ func (table *Table) SelectAll() ([]Row, error) {
 			return nil, err
 		}
 
-		lockedPage := LockPage(page)
+		lockedPage := NewRowListPage(page)
 		defer lockedPage.Unlock()
 		for i := 0; i < lockedPage.NumRows(); i++ {
 			row := lockedPage.ReadRow(i, &table.schema)
