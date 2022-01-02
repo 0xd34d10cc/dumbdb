@@ -63,11 +63,23 @@ func (page *Page) MarkClean() {
 	page.dirty = false
 }
 
-// NOTE: cache methods have to be thread-safe
+// NOTE: all cache methods have to be thread-safe
 type PageCache interface {
+	// get page from cache by id
 	Get(id PageID) *Page
-	Put(id PageID, page *Page) (PageID, *Page)
+
+	// try put page into cache
+	// returns:
+	//    (id, existingPage) if page with provided id is already in cache
+	//    (InvalidPageID, nil) on successful insert if cache is not full
+	//    (evictedID, evictedPage) otherwise
+	//
+	TryPut(id PageID, page *Page) (PageID, *Page)
+
+	// remove page from cache
 	Remove(id PageID) *Page
+
+	// run function f for each page in cache
 	ForEach(f func(PageID, *Page) bool)
 }
 
@@ -126,8 +138,18 @@ func (pager *Pager) FetchPage(id PageID) (*Page, error) {
 		return nil, err
 	}
 
-	pager.putInPool(id, page)
-	return page, nil
+	// put page in cache
+	evictedID, evictedPage := pager.cache.TryPut(id, page)
+	if evictedID != InvalidPageID {
+		if evictedID == id {
+			// other thread read page first, throw away our data and use existing page
+			return evictedPage, nil
+		}
+
+		err = pager.SyncPage(evictedID, evictedPage)
+	}
+
+	return page, err
 }
 
 // Allocate a new page on the disk, this only changes the metadata
@@ -276,14 +298,6 @@ func (pager *Pager) markDeallocated(index *Page, id PageID) {
 	if pager.isPageAllocated(index, id) {
 		index.Data()[int(id)] = 0
 		index.MarkDirty()
-	}
-}
-
-// Put a page in memory pager, evicting if neccesarry
-func (pager *Pager) putInPool(id PageID, page *Page) {
-	evictedID, evictedPage := pager.cache.Put(id, page)
-	if evictedID != InvalidPageID {
-		pager.SyncPage(evictedID, evictedPage)
 	}
 }
 
