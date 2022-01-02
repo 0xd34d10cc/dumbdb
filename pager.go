@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"sync"
-	"sync/atomic"
 )
 
 type Storage interface {
@@ -299,21 +298,18 @@ func (pager *Pager) offsetFromID(index *Page, id PageID) (int64, error) {
 }
 
 func (pager *Pager) ensureSize(requiredSize int64) error {
-	for {
-		currentSize := atomic.LoadInt64(&pager.storageSize)
-		if currentSize >= requiredSize {
-			return nil
-		}
-
-		err := pager.storage.Truncate(requiredSize)
-		if err != nil {
-			return err
-		}
-
-		if atomic.CompareAndSwapInt64(&pager.storageSize, currentSize, requiredSize) {
-			return nil
-		}
+	currentSize := pager.storageSize
+	if currentSize >= requiredSize {
+		return nil
 	}
+
+	err := pager.storage.Truncate(requiredSize)
+	if err != nil {
+		return err
+	}
+
+	pager.storageSize = requiredSize
+	return nil
 }
 
 // Read page at offset
@@ -330,11 +326,12 @@ func (pager *Pager) readPageAt(offset int64) (*Page, error) {
 func (pager *Pager) readPage(id PageID) (*Page, error) {
 	index := pager.index
 	index.Lock()
-	defer index.Unlock()
 	offset, err := pager.offsetFromID(index, id)
 	if err != nil {
+		index.Unlock()
 		return nil, err
 	}
+	index.Unlock()
 
 	return pager.readPageAt(offset)
 }
@@ -349,11 +346,12 @@ func (pager *Pager) writePageAt(offset int64, page *Page) error {
 func (pager *Pager) writePage(id PageID, page *Page) error {
 	index := pager.index
 	index.Lock()
-	defer index.Unlock()
 	offset, err := pager.offsetFromID(index, id)
 	if err != nil {
+		index.Unlock()
 		return err
 	}
+	index.Unlock()
 
 	return pager.writePageAt(offset, page)
 }
