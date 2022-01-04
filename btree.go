@@ -1,6 +1,8 @@
 package main
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+)
 
 // TODO: move to a different file
 type RowID PageID
@@ -56,6 +58,8 @@ const (
 	PageIDSize      = 4 // sizeof(PageID)
 	BranchEntrySize = KeySize + PageIDSize
 	LeafEntrySize   = KeySize + ValueSize
+	BranchNodeCap   = (int(PageSize) - NodeHeaderSize) / BranchEntrySize
+	LeafNodeCap     = (int(PageSize) - NodeHeaderSize) / LeafEntrySize
 )
 
 type BTreeNode struct {
@@ -113,23 +117,27 @@ func initLeafNode(page *Page, prev PageID, next PageID) BTreeNode {
 	return node
 }
 
-func (node *BTreeNode) IsLeaf() bool {
-	return node.isLeaf
-}
-
 func (node *BTreeNode) len() int {
 	return int(node.slotsTaken)
 }
 
+func (node *BTreeNode) truncate(n int) {
+	if n >= int(node.slotsTaken) {
+		return
+	}
+
+	node.slotsTaken = uint16(n)
+}
+
 func (node *BTreeNode) branchCap() int {
-	return (int(PageSize) - NodeHeaderSize) / BranchEntrySize
+	return BranchNodeCap
 }
 
 func (node *BTreeNode) leafCap() int {
-	return (int(PageSize) - NodeHeaderSize) / LeafEntrySize
+	return LeafNodeCap
 }
 
-// requires IsLeaf() && idx < Len()
+// requires !IsLeaf() && idx < Len()
 func (node *BTreeNode) getBranch(idx int) (key BTreeKey, id PageID) {
 	offset := NodeHeaderSize + BranchEntrySize*idx
 	data := node.page.Data()
@@ -138,6 +146,7 @@ func (node *BTreeNode) getBranch(idx int) (key BTreeKey, id PageID) {
 	return
 }
 
+// requires !IsLeaf()
 func (node *BTreeNode) searchBranch(key BTreeKey) (int, PageID) {
 	len := node.len()
 	for idx := 0; idx < len; idx++ {
@@ -149,6 +158,20 @@ func (node *BTreeNode) searchBranch(key BTreeKey) (int, PageID) {
 	return len, node.next
 }
 
+// requires !node.isLeaf() && node.len() < node.cap() && idx <= node.len()
+func (node *BTreeNode) insertBranchAt(idx int, key BTreeKey, id PageID) int {
+	len := node.len()
+	data := node.page.Data()
+	offset := NodeHeaderSize + BranchEntrySize*idx
+	restSize := (len - idx) * BranchEntrySize
+	copy(data[offset+BranchEntrySize:], data[offset:offset+restSize])
+	binary.LittleEndian.PutUint32(data[offset:], uint32(key))
+	binary.LittleEndian.PutUint32(data[offset+KeySize:], uint32(id))
+	node.slotsTaken++
+	return idx
+}
+
+// requires !node.isLeaf()
 func (node *BTreeNode) insertBranch(key BTreeKey, id PageID) int {
 	idx := 0
 	len := node.len()
@@ -163,16 +186,19 @@ func (node *BTreeNode) insertBranch(key BTreeKey, id PageID) int {
 		idx++
 	}
 
-	data := node.page.Data()
-	offset := NodeHeaderSize + BranchEntrySize*idx
-	restSize := (len - idx) * BranchEntrySize
-	copy(data[offset+BranchEntrySize:], data[offset:offset+restSize])
-	binary.LittleEndian.PutUint32(data[offset:], uint32(key))
-	binary.LittleEndian.PutUint32(data[offset+KeySize:], uint32(id))
-	node.slotsTaken++
-	return idx
+	return node.insertBranchAt(idx, key, id)
 }
 
+func (node *BTreeNode) removeBranch(idx int) {
+	data := node.page.Data()
+	dstOffset := NodeHeaderSize + BranchEntrySize*idx
+	srcOffset := dstOffset + BranchEntrySize
+	restSize := (node.len() - idx) * BranchEntrySize
+	copy(data[dstOffset:], data[srcOffset:srcOffset+restSize])
+	node.slotsTaken--
+}
+
+// requies node.isLeaf
 func (node *BTreeNode) searchLeaf(key BTreeKey) (int, BTreeValue) {
 	len := node.len()
 	for idx := 0; idx < len; idx++ {
@@ -184,7 +210,7 @@ func (node *BTreeNode) searchLeaf(key BTreeKey) (int, BTreeValue) {
 	return len, BTreeValue(0)
 }
 
-// requires IsLeaf() && idx < Len()
+// requires node.isLeaf && idx < node.Len()
 func (node *BTreeNode) getLeaf(idx int) (key BTreeKey, value BTreeValue) {
 	offset := NodeHeaderSize + LeafEntrySize*idx
 	data := node.page.Data()
@@ -193,8 +219,8 @@ func (node *BTreeNode) getLeaf(idx int) (key BTreeKey, value BTreeValue) {
 	return
 }
 
-// requires IsLeaf() && Len() < Cap()
-// returns position at which key value pair was inserted
+// requires node.isLeaf && node.len() < node.cap()
+// returns insert position (i.e. node.GetLeaf(insertLeaf(key, value)) == (key, value))
 func (node *BTreeNode) insertLeaf(key BTreeKey, value BTreeValue) int {
 	idx := 0
 	len := node.len()
@@ -217,6 +243,15 @@ func (node *BTreeNode) insertLeaf(key BTreeKey, value BTreeValue) int {
 	binary.LittleEndian.PutUint32(data[offset+KeySize:], uint32(value))
 	node.slotsTaken++
 	return idx
+}
+
+// requires node.isLeaf && other.isLeaf && node.len() + (to - from) < node.cap()
+func (node *BTreeNode) copyFrom(other *BTreeNode, from int, to int) {
+	fromOffset := NodeHeaderSize + from*LeafEntrySize
+	toOffset := NodeHeaderSize + to*LeafEntrySize
+	dstOffset := NodeHeaderSize + node.len()*LeafEntrySize
+	copy(node.page.Data()[dstOffset:], other.page.Data()[fromOffset:toOffset])
+	node.slotsTaken += uint16(to - from)
 }
 
 func ReadBTree(rootID PageID, pager *Pager) (*BTree, error) {
@@ -250,55 +285,134 @@ func NewBTree(page *Page, pager *Pager) *BTree {
 	return tree
 }
 
-func (tree *BTree) Insert(key BTreeKey, value BTreeValue) error {
-	node := &tree.root
+func (tree *BTree) allocateLeafPage(prev PageID, next PageID) (PageID, BTreeNode, error) {
+	id, err := tree.pager.AllocatePage()
+	if err != nil {
+		return InvalidPageID, BTreeNode{}, err
+	}
 
+	page, err := tree.pager.FetchPage(id)
+	if err != nil {
+		return InvalidPageID, BTreeNode{}, err
+	}
+
+	node := initLeafNode(page, prev, next)
+	return id, node, nil
+}
+
+func (tree *BTree) Insert(key BTreeKey, value BTreeValue) error {
 	var path [4]BTreeNode
+
+	node := &tree.root
 	depth := 0
 	for {
-		if node.IsLeaf() {
-			if node.len() < node.leafCap() {
+		if node.isLeaf {
+			len := node.len()
+			if len < node.leafCap() {
 				node.insertLeaf(key, value)
 				node.writeHeader()
 				return nil
-			} else {
-				// TODO: allocate new node, backtrack & rebalance
-				panic("out of space")
 			}
+
+			parent := &tree.root
+			if depth > 1 {
+				parent = &path[depth-2]
+			}
+
+			if parent.len() == parent.branchCap() {
+				// TODO: split parent node
+				panic("branch node out of space")
+			}
+
+			newLeafID, newLeaf, err := tree.allocateLeafPage(InvalidPageID, InvalidPageID)
+			if err != nil {
+				return err
+			}
+
+			// move high keys to |newLeeaf|
+			mid, _ := node.getLeaf(len / 2)
+			newLeaf.copyFrom(node, len/2, len)
+			node.truncate(len / 2)
+
+			if key < mid {
+				node.insertLeaf(key, value)
+			} else {
+				newLeaf.insertLeaf(key, value)
+			}
+
+			// detach |node| from |parent|
+			idx, nodeID := parent.searchBranch(key)
+			if idx != parent.len() {
+				// NOTE: here we are losing information about rightmost keys
+				parent.removeBranch(idx)
+			} else {
+				panic("attempt to remove rightmost branch")
+			}
+
+			// update leaf pointers
+			newLeaf.next = node.next
+			newLeaf.prev = nodeID
+			node.next = newLeafID
+
+			if newLeaf.next != InvalidPageID {
+				nextPage, err := tree.pager.FetchPage(newLeaf.next)
+				if err != nil {
+					return nil
+				}
+
+				nextNode := readNode(nextPage)
+				nextNode.prev = newLeafID
+				nextNode.writeHeader()
+			}
+
+			// attach |node| back with key=mid
+			parent.insertBranch(mid, nodeID)
+
+			// attach new node
+			maxLeafKey, _ := newLeaf.getLeaf(newLeaf.len() - 1)
+			parent.insertBranch(maxLeafKey, newLeafID)
+
+			parent.writeHeader()
+			node.writeHeader()
+			newLeaf.writeHeader()
+			return nil
 		}
 
-		idx, id := node.searchBranch(key)
+		_, id := node.searchBranch(key)
 		if id == InvalidPageID {
 			// no valid path, which means we have not allocated node yet
-			allocatedID, err := tree.pager.AllocatePage()
+			newLeafID, newLeaf, err := tree.allocateLeafPage(InvalidPageID, InvalidPageID)
 			if err != nil {
 				return err
 			}
 
-			page, err := tree.pager.FetchPage(allocatedID)
-			if err != nil {
-				return err
-			}
+			newLeaf.insertLeaf(key, value)
+			newLeaf.writeHeader()
 
 			len := node.len()
-			prev := InvalidPageID
-			// FIXME: previous leaf node might be in a different subtree
-			if len > 0 {
-				_, prev = node.getBranch(idx - 1)
-			}
-			next := InvalidPageID
-			// FIXME: next leaf node might be in a different subtree
-			if idx+1 < len {
-				_, next = node.getBranch(idx + 1)
+			if len == 0 {
+				node.insertBranch(key, newLeafID)
+			} else {
+				if len != 1 {
+					panic("unhandled len")
+				}
+
+				// update next pointer of previous leaf node
+				_, prev := node.getBranch(len - 1)
+				node.next = newLeafID
+
+				prevPage, err := tree.pager.FetchPage(prev)
+				if err != nil {
+					return err
+				}
+
+				prevNode := readNode(prevPage)
+				prevNode.next = newLeafID
+				prevNode.writeHeader()
 			}
 
-			if len == 0 {
-				node.insertBranch(key, allocatedID)
-			} else {
-				node.next = allocatedID
-			}
 			node.writeHeader()
-			path[depth] = initLeafNode(page, prev, next)
+			path[depth] = newLeaf
 			node = &path[depth]
 			depth++
 			continue
@@ -358,7 +472,7 @@ func (cursor *Cursor) Err() error {
 func (tree *BTree) Search(key BTreeKey) Cursor {
 	node := tree.root
 	for {
-		if node.IsLeaf() {
+		if node.isLeaf {
 			idx, _ := node.searchLeaf(key)
 			return Cursor{
 				pager: tree.pager,

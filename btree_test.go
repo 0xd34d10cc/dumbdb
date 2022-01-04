@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"testing"
 )
@@ -56,51 +57,103 @@ func (s *MemoryStorage) Seek(diff int64, whence int) (newOff int64, err error) {
 	return
 }
 
+func debugTree(t *testing.T, tree *BTree) {
+	fmt.Println(tree.root.len())
+	for i := 0; i < tree.root.len(); i++ {
+		key, id := tree.root.getBranch(i)
+		fmt.Printf("%v) %v -> %v", i, key, id)
+
+		page, err := tree.pager.FetchPage(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		node := readNode(page)
+		if !node.isLeaf {
+			t.Fatal("not leaf")
+		}
+
+		fmt.Printf(" (prev: %v, next: %v): ", node.prev, node.next)
+
+		n := node.len()
+		if n > 10 {
+			n = 5
+		}
+		for idx := 0; idx < n; idx++ {
+			k, v := node.getLeaf(idx)
+			fmt.Printf("(%v, %v), ", k, v)
+		}
+
+		fmt.Printf(" ... ")
+		for idx := node.len() - 5; idx < node.len(); idx++ {
+			k, v := node.getLeaf(idx)
+			fmt.Printf(", (%v, %v)", k, v)
+		}
+		fmt.Println()
+	}
+}
+
 func TestInsert(t *testing.T) {
 	storage := &MemoryStorage{
 		data: make([]byte, 0),
 	}
 	pager, err := NewPager(10, storage)
 	if err != nil {
-		t.Error(err)
+		t.Fatal(err)
 	}
 
 	rootID, err := pager.AllocatePage()
 	if err != nil {
-		t.Error(err)
+		t.Fatal(err)
 	}
 
 	root, err := pager.FetchPage(rootID)
 	if err != nil {
-		t.Error(err)
+		t.Fatal(err)
 	}
 
-	const nEntries = 500
-	const searchFrom = nEntries / 2
+	const nEntries = (LeafNodeCap - 1) * 6
 
 	tree := NewBTree(root, pager)
-	for key := 0; key < nEntries; key++ {
+	// insert high keys
+	for key := nEntries - 1; key >= nEntries/2; key-- {
 		val := key * 2
 		err = tree.Insert(BTreeKey(key), BTreeValue(val))
 		if err != nil {
-			t.Error(err)
+			t.Fatal(err)
 		}
 	}
 
-	c := tree.Search(searchFrom)
+	debugTree(t, tree)
+
+	fmt.Println("----------------------------------------")
+
+	// insert low keys
+	for key := 0; key < nEntries/2; key++ {
+		val := key * 2
+		err = tree.Insert(BTreeKey(key), BTreeValue(val))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	debugTree(t, tree)
+
+	const searchFrom = 0
+	c := tree.Search(BTreeKey(searchFrom))
 	for i := searchFrom; i < nEntries; i++ {
 		if c.Err() != nil {
-			t.Error(c.Err())
+			t.Fatal(c.Err())
 		}
 
 		key, val := c.Get()
 		if key != BTreeKey(i) {
-			t.Errorf("Unexpected key at %v: %v %v\n", i, key, val)
+			t.Fatalf("Unexpected key at %v: %v %v\n", i, key, val)
 		}
 
 		if !c.Forward() {
 			if i+1 != nEntries {
-				t.Errorf("Unexpected end of cursor: %v at %v\n", c.Err(), i)
+				t.Fatalf("Unexpected end of cursor: %v at %v\n", c.Err(), i)
 			}
 		}
 	}
