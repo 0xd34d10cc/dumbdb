@@ -6,7 +6,7 @@ import (
 	"github.com/alecthomas/participle/v2/lexer"
 )
 
-var iniLexer = lexer.MustSimple([]lexer.Rule{
+var queryLexer = lexer.MustSimple([]lexer.Rule{
 	{Name: `Ident`, Pattern: `[a-zA-Z][a-zA-Z_\d]*`},
 	{Name: `String`, Pattern: `"(?:\\.|[^"])*"`},
 	{Name: `Int`, Pattern: `\d+`},
@@ -90,7 +90,7 @@ type Query struct {
 }
 
 var parser = participle.MustBuild(&Query{},
-	participle.Lexer(iniLexer),
+	participle.Lexer(queryLexer),
 	participle.Unquote("String"),
 )
 

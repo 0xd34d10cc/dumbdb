@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"hash/fnv"
 	"io"
 	"sync"
 )
@@ -12,13 +11,10 @@ import (
 type PageID uint32
 
 const PageSize uint32 = 4096
-const InvalidPageID PageID = PageID(0xf0000000)
 
-var (
-	ErrInvalidStorageSize = errors.New("storage size should be multiple of page size")
-	ErrNoFreePages        = errors.New("no free pages")
-	ErrPageNotAllocated   = errors.New("page not allocated")
-)
+// any page > InvalidPageID is also considered invalid
+// so max file size is (InvalidPageID - 1) * PageSize = ~64GB
+const InvalidPageID PageID = PageID(0x00ffffff)
 
 func (id PageID) String() string {
 	if id == InvalidPageID {
@@ -27,30 +23,34 @@ func (id PageID) String() string {
 	return fmt.Sprintf("PageID(%d)", uint32(id))
 }
 
-var pageLocks []sync.Mutex = make([]sync.Mutex, 1024)
+var pageLocks [1024]sync.Mutex
 
-func fnv32(val uint32) uint32 {
-	hasher := fnv.New32()
-	var bytes [4]byte
-	binary.LittleEndian.PutUint32(bytes[:], val)
-	hasher.Write(bytes[:])
-	return hasher.Sum32()
-}
+func fnv32(id PageID) uint32 {
+	val := uint32(id)
+	hash := uint32(2166136261)
+	hash *= 16777619
+	hash ^= val & 0xff
 
-func pageIDMutex(id PageID) *sync.Mutex {
-	idx := fnv32(uint32(id)) % uint32(len(pageLocks))
-	return &pageLocks[idx]
+	hash *= 16777619
+	hash ^= (val >> 8) & 0xff
+
+	hash *= 16777619
+	hash ^= (val >> 16) & 0xff
+	return hash
 }
 
 func LockPageID(id PageID) {
-	pageIDMutex(id).Lock()
+	idx := fnv32(id) % uint32(len(pageLocks))
+	pageLocks[idx].Lock()
 }
 
 func UnlockPageID(id PageID) {
-	pageIDMutex(id).Unlock()
+	idx := fnv32(id) % uint32(len(pageLocks))
+	pageLocks[idx].Unlock()
 }
 
 type Page struct {
+	// protects access to data
 	m     sync.Mutex
 	dirty bool
 	data  [PageSize]byte
@@ -192,6 +192,12 @@ type PageCache interface {
 	ForEach(f func(PageID, *Page) bool)
 }
 
+var (
+	ErrInvalidStorageSize = errors.New("storage size should be multiple of page size")
+	ErrNoFreePages        = errors.New("no free pages")
+	ErrPageNotAllocated   = errors.New("page not allocated")
+)
+
 // Manages pool of pages in memory abstracting away details of file storage
 type Pager struct {
 	storage     Storage
@@ -257,7 +263,9 @@ func (pager *Pager) FetchPage(id PageID) (*Page, error) {
 			// SyncPage() will deadlock in this case
 			panic("duplicate page id")
 		}
+		evictedPage.Lock()
 		err = pager.SyncPage(evictedID, evictedPage)
+		evictedPage.Unlock()
 	}
 
 	return page, err
@@ -268,6 +276,7 @@ func (pager *Pager) AllocatePage() (PageID, error) {
 	index := pager.index
 	index.Lock()
 	defer index.Unlock()
+	// FIXME: sync changed metadata page
 	id := index.Allocate()
 	if id == InvalidPageID {
 		return InvalidPageID, ErrNoFreePages
@@ -276,19 +285,6 @@ func (pager *Pager) AllocatePage() (PageID, error) {
 	offset := index.GetOffset(id)
 	err := pager.ensureSize(offset + int64(PageSize))
 	return id, err
-}
-
-// Flush page to disk by id
-func (pager *Pager) SyncPageByID(id PageID) error {
-	page := pager.cache.Get(id)
-	if page == nil {
-		// page is not cached, nothing to sync
-		return nil
-	}
-
-	page.Lock()
-	defer page.Unlock()
-	return pager.SyncPage(id, page)
 }
 
 // Flush page to disk, page have to be locked

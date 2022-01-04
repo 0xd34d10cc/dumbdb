@@ -83,7 +83,6 @@ func (p *RowListPage) Rollback() {
 }
 
 type Table struct {
-	// TODO: save schema to disk
 	schema Schema
 	file   *os.File
 	pager  *Pager
