@@ -83,6 +83,7 @@ type Select struct {
 	Table string `"select" "*" "from" @Ident`
 }
 
+// see https://sqlite.org/syntaxdiagrams.html
 type Query struct {
 	Create *Create `@@`
 	Insert *Insert `| @@`

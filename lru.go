@@ -130,6 +130,7 @@ func (cache *LRUCache) Remove(id PageID) *Page {
 
 func (cache *LRUCache) ForEach(f func(id PageID, page *Page) bool) {
 	cache.m.Lock()
+	defer cache.m.Unlock()
 	for node := cache.recentlyUsed; node != nil; node = node.prev {
 		if !f(node.id, node.page) {
 			break

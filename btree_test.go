@@ -57,8 +57,27 @@ func (s *MemoryStorage) Seek(diff int64, whence int) (newOff int64, err error) {
 	return
 }
 
+func debugLeaf(node *BTreeNode) {
+	if node.len() > 10 {
+		for idx := 0; idx < 5; idx++ {
+			k, v := node.getLeaf(idx)
+			fmt.Printf("(%v, %v), ", k, v)
+		}
+
+		fmt.Printf(" ... ")
+		for idx := node.len() - 5; idx < node.len(); idx++ {
+			k, v := node.getLeaf(idx)
+			fmt.Printf(", (%v, %v)", k, v)
+		}
+	} else {
+		for idx := 0; idx < node.len(); idx++ {
+			k, v := node.getLeaf(idx)
+			fmt.Printf("(%v, %v), ", k, v)
+		}
+	}
+}
+
 func debugTree(t *testing.T, tree *BTree) {
-	fmt.Println(tree.root.len())
 	for i := 0; i < tree.root.len(); i++ {
 		key, id := tree.root.getBranch(i)
 		fmt.Printf("%v) %v -> %v", i, key, id)
@@ -75,20 +94,23 @@ func debugTree(t *testing.T, tree *BTree) {
 
 		fmt.Printf(" (prev: %v, next: %v): ", node.prev, node.next)
 
-		n := node.len()
-		if n > 10 {
-			n = 5
-		}
-		for idx := 0; idx < n; idx++ {
-			k, v := node.getLeaf(idx)
-			fmt.Printf("(%v, %v), ", k, v)
+		debugLeaf(&node)
+		fmt.Println()
+	}
+
+	if tree.root.next != InvalidPageID {
+		page, err := tree.pager.FetchPage(tree.root.next)
+		if err != nil {
+			t.Fatal(err)
 		}
 
-		fmt.Printf(" ... ")
-		for idx := node.len() - 5; idx < node.len(); idx++ {
-			k, v := node.getLeaf(idx)
-			fmt.Printf(", (%v, %v)", k, v)
+		node := readNode(page)
+		if !node.isLeaf {
+			t.Fatal("not leaf")
 		}
+
+		fmt.Printf("%v) above          (prev: %v, next: %v): ", tree.root.len(), node.prev, node.next)
+		debugLeaf(&node)
 		fmt.Println()
 	}
 }
@@ -97,7 +119,7 @@ func TestInsert(t *testing.T) {
 	storage := &MemoryStorage{
 		data: make([]byte, 0),
 	}
-	pager, err := NewPager(10, storage)
+	pager, err := NewPager(5, storage)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +134,7 @@ func TestInsert(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const nEntries = (LeafNodeCap - 1) * 6
+	const nEntries = 4096
 
 	tree := NewBTree(root, pager)
 	// insert high keys
@@ -123,10 +145,6 @@ func TestInsert(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-
-	debugTree(t, tree)
-
-	fmt.Println("----------------------------------------")
 
 	// insert low keys
 	for key := 0; key < nEntries/2; key++ {

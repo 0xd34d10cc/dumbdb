@@ -249,9 +249,8 @@ func (node *BTreeNode) insertLeaf(key BTreeKey, value BTreeValue) int {
 func (node *BTreeNode) copyFrom(other *BTreeNode, from int, to int) {
 	fromOffset := NodeHeaderSize + from*LeafEntrySize
 	toOffset := NodeHeaderSize + to*LeafEntrySize
-	dstOffset := NodeHeaderSize + node.len()*LeafEntrySize
-	copy(node.page.Data()[dstOffset:], other.page.Data()[fromOffset:toOffset])
-	node.slotsTaken += uint16(to - from)
+	copy(node.page.Data()[NodeHeaderSize:], other.page.Data()[fromOffset:toOffset])
+	node.slotsTaken = uint16(to - from)
 }
 
 func ReadBTree(rootID PageID, pager *Pager) (*BTree, error) {
@@ -342,11 +341,9 @@ func (tree *BTree) Insert(key BTreeKey, value BTreeValue) error {
 
 			// detach |node| from |parent|
 			idx, nodeID := parent.searchBranch(key)
-			if idx != parent.len() {
-				// NOTE: here we are losing information about rightmost keys
+			isRightmost := idx == parent.len()
+			if !isRightmost {
 				parent.removeBranch(idx)
-			} else {
-				panic("attempt to remove rightmost branch")
 			}
 
 			// update leaf pointers
@@ -357,7 +354,7 @@ func (tree *BTree) Insert(key BTreeKey, value BTreeValue) error {
 			if newLeaf.next != InvalidPageID {
 				nextPage, err := tree.pager.FetchPage(newLeaf.next)
 				if err != nil {
-					return nil
+					return err
 				}
 
 				nextNode := readNode(nextPage)
@@ -369,8 +366,12 @@ func (tree *BTree) Insert(key BTreeKey, value BTreeValue) error {
 			parent.insertBranch(mid, nodeID)
 
 			// attach new node
-			maxLeafKey, _ := newLeaf.getLeaf(newLeaf.len() - 1)
-			parent.insertBranch(maxLeafKey, newLeafID)
+			if isRightmost {
+				parent.next = newLeafID
+			} else {
+				maxLeafKey, _ := newLeaf.getLeaf(newLeaf.len() - 1)
+				parent.insertBranch(maxLeafKey, newLeafID)
+			}
 
 			parent.writeHeader()
 			node.writeHeader()
@@ -385,9 +386,6 @@ func (tree *BTree) Insert(key BTreeKey, value BTreeValue) error {
 			if err != nil {
 				return err
 			}
-
-			newLeaf.insertLeaf(key, value)
-			newLeaf.writeHeader()
 
 			len := node.len()
 			if len == 0 {
