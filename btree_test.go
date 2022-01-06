@@ -77,41 +77,43 @@ func debugLeaf(node *BTreeNode) {
 	}
 }
 
-func debugTree(t *testing.T, tree *BTree) {
-	for i := 0; i < tree.root.len(); i++ {
-		key, id := tree.root.getBranch(i)
-		fmt.Printf("%v) %v -> %v", i, key, id)
+func debugTree(t *testing.T, root *BTreeNode, pager *Pager) {
+	for i := 0; i < root.len(); i++ {
+		key, id := root.getBranch(i)
+		fmt.Printf("%v) %v -> %v: ", i, key, id)
 
-		page, err := tree.pager.FetchPage(id)
+		page, err := pager.FetchPage(id)
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		node := readNode(page)
 		if !node.isLeaf {
-			t.Fatal("not leaf")
+			fmt.Println("subtree:")
+			debugTree(t, &node, pager)
+		} else {
+			fmt.Printf("(prev: %v, next: %v): ", node.prev, node.next)
+
+			debugLeaf(&node)
+			fmt.Println()
 		}
-
-		fmt.Printf(" (prev: %v, next: %v): ", node.prev, node.next)
-
-		debugLeaf(&node)
-		fmt.Println()
 	}
 
-	if tree.root.next != InvalidPageID {
-		page, err := tree.pager.FetchPage(tree.root.next)
+	if root.next != InvalidPageID {
+		page, err := pager.FetchPage(root.next)
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		node := readNode(page)
 		if !node.isLeaf {
-			t.Fatal("not leaf")
+			fmt.Println("rightmost subtree:")
+			debugTree(t, &node, pager)
+		} else {
+			fmt.Printf("%v) above          (prev: %v, next: %v): ", root.len(), node.prev, node.next)
+			debugLeaf(&node)
+			fmt.Println()
 		}
-
-		fmt.Printf("%v) above          (prev: %v, next: %v): ", tree.root.len(), node.prev, node.next)
-		debugLeaf(&node)
-		fmt.Println()
 	}
 }
 
@@ -146,6 +148,8 @@ func TestInsert(t *testing.T) {
 		}
 	}
 
+	debugTree(t, &tree.root, tree.pager)
+
 	// insert low keys
 	for key := 0; key < nEntries/2; key++ {
 		val := key * 2
@@ -155,10 +159,12 @@ func TestInsert(t *testing.T) {
 		}
 	}
 
-	debugTree(t, tree)
+	fmt.Println("---------------------------------")
+	debugTree(t, &tree.root, tree.pager)
 
 	const searchFrom = 0
 	c := tree.Search(BTreeKey(searchFrom))
+	defer c.Close()
 	for i := searchFrom; i < nEntries; i++ {
 		if c.Err() != nil {
 			t.Fatal(c.Err())
@@ -169,9 +175,13 @@ func TestInsert(t *testing.T) {
 			t.Fatalf("Unexpected key at %v: %v %v\n", i, key, val)
 		}
 
-		if !c.Forward() {
-			if i+1 != nEntries {
+		isNotLast := i+1 != nEntries
+		movedForward := c.Forward()
+		if isNotLast != movedForward {
+			if !movedForward {
 				t.Fatalf("Unexpected end of cursor: %v at %v\n", c.Err(), i)
+			} else {
+				t.Fatalf("Cursor moved past the end: %v at %v\n", c.Err(), i)
 			}
 		}
 	}

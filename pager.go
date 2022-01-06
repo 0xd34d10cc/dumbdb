@@ -51,9 +51,17 @@ func UnlockPageID(id PageID) {
 
 type Page struct {
 	// protects access to data
-	m     sync.Mutex
+	m     sync.RWMutex
 	dirty bool
-	data  [PageSize]byte
+	data  [main.PageSize]byte
+}
+
+func (page *Page) RLock() {
+	page.m.RLock()
+}
+
+func (page *Page) RUnlock() {
+	page.m.RUnlock()
 }
 
 func (page *Page) Lock() {
@@ -102,6 +110,14 @@ func ReadAllocationIndex(storage Storage) (*AllocationIndex, error) {
 		nEntires: nEntries,
 		root:     root,
 	}, nil
+}
+
+func (index *AllocationIndex) RLock() {
+	index.root.RLock()
+}
+
+func (index *AllocationIndex) RUnlock() {
+	index.root.RUnlock()
 }
 
 func (index *AllocationIndex) Lock() {
@@ -242,30 +258,30 @@ func NewPager(maxPages int, storage Storage) (*Pager, error) {
 // Obtain a page by id
 func (pager *Pager) FetchPage(id PageID) (*Page, error) {
 	LockPageID(id)
-	defer UnlockPageID(id)
 
 	// first check the memory cache
 	page := pager.cache.Get(id)
 	if page != nil {
+		UnlockPageID(id)
 		return page, nil
 	}
 
 	// read from the disk
 	page, err := pager.readPage(id)
 	if err != nil {
+		UnlockPageID(id)
 		return nil, err
 	}
 
 	// put page in cache
 	evictedID, evictedPage := pager.cache.Put(id, page)
+	UnlockPageID(id)
+
 	if evictedID != InvalidPageID {
-		if evictedID == id {
-			// SyncPage() will deadlock in this case
-			panic("duplicate page id")
-		}
-		evictedPage.Lock()
+		// FIXME: this could cause a deadlock if current thread holds a locked reference to evictedPage
+		evictedPage.RLock()
 		err = pager.SyncPage(evictedID, evictedPage)
-		evictedPage.Unlock()
+		evictedPage.RUnlock()
 	}
 
 	return page, err
@@ -309,8 +325,8 @@ func (pager *Pager) SyncPage(id PageID, page *Page) error {
 // Flush all metadata pages to the disk
 func (pager *Pager) SyncMetadata() error {
 	index := pager.index
-	index.Lock()
-	defer index.Unlock()
+	index.RLock()
+	defer index.RUnlock()
 	return index.SyncPages(pager.storage)
 }
 
@@ -322,9 +338,9 @@ func (pager *Pager) SyncAll() error {
 	}
 
 	pager.cache.ForEach(func(id PageID, page *Page) bool {
-		page.Lock()
+		page.RLock()
 		err = pager.SyncPage(id, page)
-		page.Unlock()
+		page.RUnlock()
 		return err == nil
 	})
 
@@ -339,8 +355,8 @@ func (pager *Pager) FirstPage() PageID {
 
 func (pager *Pager) NextPage(id PageID) PageID {
 	index := pager.index
-	index.Lock()
-	defer index.Unlock()
+	index.RLock()
+	defer index.RUnlock()
 	next := PageID(uint32(id) + 1)
 	if index.IsAllocated(next) {
 		return next
@@ -376,13 +392,15 @@ func (pager *Pager) readPageAt(offset int64) (*Page, error) {
 // Read page from the disk
 func (pager *Pager) readPage(id PageID) (*Page, error) {
 	index := pager.index
-	index.Lock()
+	index.RLock()
 	offset := index.GetOffset(id)
 	if offset == -1 {
-		index.Unlock()
+		index.RUnlock()
 		return nil, ErrPageNotAllocated
 	}
-	index.Unlock()
+	index.RUnlock()
+
+	// FIXME: it is possible for id -> offset mapping to change while we are doing IO
 	return pager.readPageAt(offset)
 }
 
@@ -395,13 +413,13 @@ func (pager *Pager) writePageAt(offset int64, page *Page) error {
 // Write page to the disk
 func (pager *Pager) writePage(id PageID, page *Page) error {
 	index := pager.index
-	index.Lock()
+	index.RLock()
 	offset := index.GetOffset(id)
 	if offset == -1 {
-		index.Unlock()
+		index.RUnlock()
 		return ErrPageNotAllocated
 	}
-	index.Unlock()
+	index.RUnlock()
 
 	return pager.writePageAt(offset, page)
 }
