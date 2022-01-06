@@ -27,8 +27,9 @@ func (id RowID) RowIndex() uint8 {
 //
 // see cmudb.io/btree for visualization
 type BTree struct {
-	root  BTreeNode
-	pager *Pager
+	rootID PageID
+	root   BTreeNode
+	pager  *Pager
 }
 
 type BTreeKey uint32
@@ -43,8 +44,9 @@ const (
 	BranchEntrySize = KeySize + PageIDSize
 	LeafEntrySize   = KeySize + ValueSize
 
+	// test values
 	// BranchNodeCap = 3
-	// LeafNodeCap   = 10
+	// LeafNodeCap   = 4
 	BranchNodeCap = (int(PageSize) - NodeHeaderSize) / BranchEntrySize
 	LeafNodeCap   = (int(PageSize) - NodeHeaderSize) / LeafEntrySize
 )
@@ -83,8 +85,8 @@ func (node *BTreeNode) writeHeader() {
 		data[0] = 1
 	} else {
 		data[0] = 0
-	}
 
+	}
 	binary.LittleEndian.PutUint16(data[2:], node.slotsTaken)
 	binary.LittleEndian.PutUint32(data[4:], uint32(node.prev))
 	binary.LittleEndian.PutUint32(data[8:], uint32(node.next))
@@ -242,25 +244,56 @@ func ReadBTree(rootID PageID, pager *Pager) (*BTree, error) {
 
 	rootNode := readNode(root)
 	return &BTree{
-		root:  rootNode,
-		pager: pager,
+		rootID: rootID,
+		root:   rootNode,
+		pager:  pager,
 	}, nil
 }
 
-func NewBTree(page *Page, pager *Pager) *BTree {
+func NewBTree(pager *Pager) (*BTree, error) {
+	rootID, err := pager.AllocatePage()
+	if err != nil {
+		return nil, err
+	}
+
+	rootPage, err := pager.FetchPage(rootID)
+	if err != nil {
+		return nil, err
+	}
+
 	tree := &BTree{
+		rootID: rootID,
 		root: BTreeNode{
 			isLeaf:     false,
 			slotsTaken: 0,
 			prev:       InvalidPageID,
 			next:       InvalidPageID,
 
-			page: page,
+			page: rootPage,
 		},
 		pager: pager,
 	}
+
+	// insert 2 leaf nodes initially
+	leftID, left, err := tree.allocateNode(true)
+	if err != nil {
+		return nil, err
+	}
+
+	rightID, right, err := tree.allocateNode(true)
+	if err != nil {
+		return nil, err
+	}
+
+	tree.root.insertBranch(BTreeKey(0), leftID)
+	tree.root.next = rightID
+	left.next = rightID
+	right.prev = leftID
+
+	left.writeHeader()
+	right.writeHeader()
 	tree.root.writeHeader()
-	return tree
+	return tree, nil
 }
 
 func (tree *BTree) allocateNode(isLeaf bool) (PageID, BTreeNode, error) {
@@ -286,40 +319,132 @@ func (tree *BTree) allocateNode(isLeaf bool) (PageID, BTreeNode, error) {
 	return id, node, nil
 }
 
-//                                                                split key, node id, node, err
-func (tree *BTree) splitNode(node *BTreeNode, parent *BTreeNode) (BTreeKey, PageID, BTreeNode, error) {
-	id, newNode, err := tree.allocateNode(node.isLeaf)
+// Move high keys from node to a new node
+// requires node.len() == node.Cap()
+func (tree *BTree) splitNode(node *BTreeNode) (mid BTreeKey, newID PageID, newNode BTreeNode, err error) {
+	newID, newNode, err = tree.allocateNode(node.isLeaf)
 	if err != nil {
-		return BTreeKey(0), InvalidPageID, BTreeNode{}, err
+		return
 	}
 
 	len := node.len()
-	var mid BTreeKey
 	if node.isLeaf {
 		mid, _ = node.getLeaf(len/2 - 1)
 		newNode.copyLeafFrom(node, len/2, len)
+		node.truncate(len / 2)
 	} else {
-		mid, _ = node.getBranch(len/2 - 1)
-		newNode.copyBranchFrom(node, len/2, len)
+		var id PageID
+		mid, id = node.getBranch(len / 2)
+		newNode.copyBranchFrom(node, len/2+1, len)
+
+		// move rightmost pointer to the right node
+		newNode.next = node.next
+
+		// set new rightmost pointer for left node
+		node.next = id
+		node.truncate(len / 2)
 	}
 
-	node.truncate(len / 2)
-	return mid, id, newNode, err
+	return
 }
 
-func (tree *BTree) insertSlow(path []BTreeNode, key BTreeKey, value BTreeValue) error {
+func getMaxKey(node *BTreeNode, pager *Pager) (BTreeKey, error) {
+	for {
+		if node.isLeaf {
+			k, _ := node.getLeaf(node.len() - 1)
+			return k, nil
+		}
+
+		page, err := pager.FetchPage(node.next)
+		if err != nil {
+			return BTreeKey(0), err
+		}
+
+		nextNode := readNode(page)
+		node = &nextNode
+	}
+}
+
+// split branch node
+func (tree *BTree) splitBranch(path []*BTreeNode, key BTreeKey) (mid BTreeKey, right BTreeNode, err error) {
 	depth := len(path)
-	node := &path[depth-1]
-	parent := &tree.root
-	if depth > 1 {
-		parent = &path[depth-2]
+	if depth == 1 {
+		// we got to the root
+		var parentID PageID
+		var parent BTreeNode
+		parentID, parent, err = tree.allocateNode(false)
+		if err != nil {
+			return
+		}
+
+		left := path[0]
+		var rightID PageID
+		mid, rightID, right, err = tree.splitNode(left)
+		if err != nil {
+			return
+		}
+
+		parent.next = rightID
+		parent.insertBranch(mid, tree.rootID)
+		parent.writeHeader()
+		left.writeHeader()
+		right.writeHeader()
+
+		tree.root = parent
+		tree.rootID = parentID
+		return
 	}
 
+	left := path[depth-1]
+	parent := path[depth-2]
 	if parent.len() == parent.branchCap() {
-		panic("branch node overflow")
+		var parentMid BTreeKey
+		var parentRhs BTreeNode
+		parentMid, parentRhs, err = tree.splitBranch(path[:depth-1], key)
+		if err != nil {
+			return
+		}
+
+		if key > parentMid {
+			parent = &parentRhs
+		}
 	}
 
-	mid, newLeafID, newLeaf, err := tree.splitNode(node, parent)
+	var rightID PageID
+	mid, rightID, right, err = tree.splitNode(left)
+	if err != nil {
+		return
+	}
+
+	idx, leftID := parent.searchBranch(key)
+	isRightmost := idx == parent.len()
+
+	// detach |left| from |parent|
+	if !isRightmost {
+		parent.removeBranchAt(idx)
+	}
+
+	parent.insertBranch(mid, leftID)
+	if isRightmost {
+		parent.next = rightID
+	} else {
+		// we'll have to find max key in the right subtree
+		var maxKey BTreeKey
+		maxKey, err = getMaxKey(&right, tree.pager)
+		if err != nil {
+			return
+		}
+		parent.insertBranch(maxKey, rightID)
+	}
+
+	parent.writeHeader()
+	left.writeHeader()
+	right.writeHeader()
+	return
+}
+
+func (tree *BTree) insertLeafOverflow(node *BTreeNode, parent *BTreeNode, key BTreeKey, value BTreeValue) error {
+	mid, newLeafID, newLeaf, err := tree.splitNode(node)
 	if err != nil {
 		return err
 	}
@@ -372,6 +497,27 @@ func (tree *BTree) insertSlow(path []BTreeNode, key BTreeKey, value BTreeValue) 
 	return nil
 }
 
+func (tree *BTree) insertSlow(path []*BTreeNode, key BTreeKey, value BTreeValue) error {
+	depth := len(path)
+	node := path[depth-1]
+	parent := path[depth-2]
+
+	// before splitting the leaf make sure we have space for a new branch
+	if parent.len() == parent.branchCap() {
+		mid, rhs, err := tree.splitBranch(path[:depth-1], key)
+		if err != nil {
+			return err
+		}
+
+		if key > mid {
+			parent = &rhs
+		}
+	}
+
+	// split the leaf and insert a new key value pair
+	return tree.insertLeafOverflow(node, parent, key, value)
+}
+
 // TODO: optimize locking, only take the locks top to bottom to avoid deadlocks
 //
 //       first do optimistic walk through tree with read-only locks on branch nodes
@@ -385,9 +531,12 @@ func (tree *BTree) Insert(key BTreeKey, value BTreeValue) error {
 	tree.root.page.Lock()
 	defer tree.root.page.Unlock()
 
-	var path [4]BTreeNode
-	node := &tree.root
 	depth := 0
+	var path [12]*BTreeNode
+
+	path[depth] = &tree.root
+	node := path[depth]
+	depth++
 	for {
 		if node.isLeaf {
 			// fast path
@@ -403,39 +552,7 @@ func (tree *BTree) Insert(key BTreeKey, value BTreeValue) error {
 
 		_, id := node.searchBranch(key)
 		if id == InvalidPageID {
-			// no valid path, which means we have not allocated node yet
-			newLeafID, newLeaf, err := tree.allocateNode(true)
-			if err != nil {
-				return err
-			}
-
-			len := node.len()
-			if len == 0 {
-				node.insertBranch(key, newLeafID)
-			} else {
-				if len != 1 {
-					panic("unhandled len")
-				}
-
-				// update next pointer of previous leaf node
-				_, prev := node.getBranch(len - 1)
-				node.next = newLeafID
-
-				prevPage, err := tree.pager.FetchPage(prev)
-				if err != nil {
-					return err
-				}
-
-				prevNode := readNode(prevPage)
-				prevNode.next = newLeafID
-				prevNode.writeHeader()
-			}
-
-			node.writeHeader()
-			path[depth] = newLeaf
-			node = &path[depth]
-			depth++
-			continue
+			panic("no valid path")
 		}
 
 		page, err := tree.pager.FetchPage(id)
@@ -443,8 +560,9 @@ func (tree *BTree) Insert(key BTreeKey, value BTreeValue) error {
 			return err
 		}
 
-		path[depth] = readNode(page)
-		node = &path[depth]
+		nextNode := readNode(page)
+		path[depth] = &nextNode
+		node = path[depth]
 		depth++
 	}
 }

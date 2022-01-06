@@ -53,7 +53,7 @@ type Page struct {
 	// protects access to data
 	m     sync.RWMutex
 	dirty bool
-	data  [main.PageSize]byte
+	data  [PageSize]byte
 }
 
 func (page *Page) RLock() {
@@ -279,9 +279,9 @@ func (pager *Pager) FetchPage(id PageID) (*Page, error) {
 
 	if evictedID != InvalidPageID {
 		// FIXME: this could cause a deadlock if current thread holds a locked reference to evictedPage
-		evictedPage.RLock()
+		// evictedPage.RLock()
 		err = pager.SyncPage(evictedID, evictedPage)
-		evictedPage.RUnlock()
+		// evictedPage.RUnlock()
 	}
 
 	return page, err

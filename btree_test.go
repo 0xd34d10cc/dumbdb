@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"testing"
 )
 
@@ -77,9 +78,10 @@ func debugLeaf(node *BTreeNode) {
 	}
 }
 
-func debugTree(t *testing.T, root *BTreeNode, pager *Pager) {
+func debugTree(t *testing.T, root *BTreeNode, pager *Pager, depth int) {
 	for i := 0; i < root.len(); i++ {
 		key, id := root.getBranch(i)
+		fmt.Printf("%v", strings.Repeat("\t", depth))
 		fmt.Printf("%v) %v -> %v: ", i, key, id)
 
 		page, err := pager.FetchPage(id)
@@ -89,11 +91,10 @@ func debugTree(t *testing.T, root *BTreeNode, pager *Pager) {
 
 		node := readNode(page)
 		if !node.isLeaf {
-			fmt.Println("subtree:")
-			debugTree(t, &node, pager)
+			fmt.Printf("subtree (right=%v): \n", node.next)
+			debugTree(t, &node, pager, depth+1)
 		} else {
 			fmt.Printf("(prev: %v, next: %v): ", node.prev, node.next)
-
 			debugLeaf(&node)
 			fmt.Println()
 		}
@@ -105,64 +106,20 @@ func debugTree(t *testing.T, root *BTreeNode, pager *Pager) {
 			t.Fatal(err)
 		}
 
+		fmt.Printf("%v", strings.Repeat("\t", depth))
 		node := readNode(page)
 		if !node.isLeaf {
-			fmt.Println("rightmost subtree:")
-			debugTree(t, &node, pager)
+			fmt.Printf("rightmost subtree (right=%v): \n", node.next)
+			debugTree(t, &node, pager, depth+1)
 		} else {
-			fmt.Printf("%v) above          (prev: %v, next: %v): ", root.len(), node.prev, node.next)
+			fmt.Printf("%v) above -> %v (prev: %v, next: %v): ", root.len(), root.next, node.prev, node.next)
 			debugLeaf(&node)
 			fmt.Println()
 		}
 	}
 }
 
-func TestInsert(t *testing.T) {
-	storage := &MemoryStorage{
-		data: make([]byte, 0),
-	}
-	pager, err := NewPager(5, storage)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	rootID, err := pager.AllocatePage()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	root, err := pager.FetchPage(rootID)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	const nEntries = 4096
-
-	tree := NewBTree(root, pager)
-	// insert high keys
-	for key := nEntries - 1; key >= nEntries/2; key-- {
-		val := key * 2
-		err = tree.Insert(BTreeKey(key), BTreeValue(val))
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	debugTree(t, &tree.root, tree.pager)
-
-	// insert low keys
-	for key := 0; key < nEntries/2; key++ {
-		val := key * 2
-		err = tree.Insert(BTreeKey(key), BTreeValue(val))
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	fmt.Println("---------------------------------")
-	debugTree(t, &tree.root, tree.pager)
-
-	const searchFrom = 0
+func checkValid(t *testing.T, tree *BTree, searchFrom int, nEntries int, tillEnd bool) {
 	c := tree.Search(BTreeKey(searchFrom))
 	defer c.Close()
 	for i := searchFrom; i < nEntries; i++ {
@@ -171,18 +128,72 @@ func TestInsert(t *testing.T) {
 		}
 
 		key, val := c.Get()
-		if key != BTreeKey(i) {
+		if key != BTreeKey(i) || val != BTreeValue(i*2) {
 			t.Fatalf("Unexpected key at %v: %v %v\n", i, key, val)
 		}
+
+		innerCursor := tree.Search(BTreeKey(i))
+		if innerCursor.Err() != nil {
+			t.Fatal(c.Err())
+		}
+		k, v := innerCursor.Get()
+		if k != key || v != val {
+			t.Fatalf("Search results don't match %v: (%v %v) vs (%v %v)\n", i, key, val, k, v)
+		}
+		innerCursor.Close()
 
 		isNotLast := i+1 != nEntries
 		movedForward := c.Forward()
 		if isNotLast != movedForward {
 			if !movedForward {
 				t.Fatalf("Unexpected end of cursor: %v at %v\n", c.Err(), i)
-			} else {
+			} else if tillEnd {
 				t.Fatalf("Cursor moved past the end: %v at %v\n", c.Err(), i)
 			}
 		}
+	}
+}
+
+func TestInsert(t *testing.T) {
+	storage := &MemoryStorage{
+		data: make([]byte, 0),
+	}
+	pager, err := NewPager(1024, storage)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tree, err := NewBTree(pager)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const nEntries = 32
+
+	// insert high keys
+	for key := nEntries - 1; key >= nEntries/2; key-- {
+		val := key * 2
+		err = tree.Insert(BTreeKey(key), BTreeValue(val))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		debugTree(t, &tree.root, pager, 0)
+		fmt.Println("---------------------------------")
+		checkValid(t, tree, key, nEntries, true)
+	}
+
+	// insert low keys
+	for key := 0; key < nEntries/2; key++ {
+		val := key * 2
+		err = tree.Insert(BTreeKey(key), BTreeValue(val))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		debugTree(t, &tree.root, pager, 0)
+		fmt.Println("---------------------------------")
+		checkValid(t, tree, 0, key+1, false)
+		checkValid(t, tree, nEntries/2, nEntries, true)
 	}
 }
