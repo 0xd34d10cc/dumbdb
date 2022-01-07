@@ -350,10 +350,6 @@ func (pager *Pager) AllocatePage() (PageID, error) {
 
 // Flush page to disk, page have to be locked
 func (pager *Pager) SyncPage(id PageID, page *Page) error {
-	if page.IsPinned() {
-		panic(fmt.Sprintf("Attempt to sync a pinned page ID=%v", id))
-	}
-
 	if !page.IsDirty() {
 		// no changes in page, nothing to sync
 		return nil
@@ -450,6 +446,7 @@ func (pager *Pager) readPage(id PageID) (*Page, error) {
 	index.RUnlock()
 
 	// FIXME: it is possible for id -> offset mapping to change while we are doing IO
+	//        we'll have to LockPageID(id) in DeallocPage() to fix that
 	page, err := pager.readPageAt(offset)
 	if err != nil {
 		return nil, err

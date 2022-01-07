@@ -31,6 +31,10 @@ type Create struct {
 	Fields []FieldDescription `"(" @@ ("," @@)*  ")"`
 }
 
+type Drop struct {
+	Table string `"drop" "table" @Ident`
+}
+
 // Same as Value, but based on pointers
 type ValuePtr struct {
 	Int *int32  `@Int`
@@ -86,6 +90,7 @@ type Select struct {
 // see https://sqlite.org/syntaxdiagrams.html
 type Query struct {
 	Create *Create `@@`
+	Drop   *Drop   `| @@`
 	Insert *Insert `| @@`
 	Select *Select `| @@`
 }

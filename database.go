@@ -14,6 +14,7 @@ import (
 
 var (
 	ErrTableAlreadyExist = errors.New("table with such name already exist")
+	ErrTableDoesNotExist = errors.New("table does not exist")
 	ErrNoSuchTable       = errors.New("no table with such name")
 	ErrUnhandledQuery    = errors.New("unhandled query")
 )
@@ -129,6 +130,29 @@ func (db *Database) Execute(query *Query) (*Result, error) {
 			delete(db.tables, create.Table)
 			return nil, err
 		}
+	case query.Drop != nil:
+		drop := query.Drop
+		table, ok := db.tables[drop.Table]
+		if !ok {
+			return nil, ErrTableDoesNotExist
+		}
+
+		delete(db.tables, drop.Table)
+		filename := table.file.Name()
+		// FIXME: this flushes all caches to disk, which is unnecessary
+		//        because we are going to delete the file anyway
+		err := table.Close()
+		if err != nil {
+			return nil, err
+		}
+
+		err = os.Remove(filename)
+		if err != nil {
+			return nil, err
+		}
+
+		err = db.saveMetadata()
+		return nil, err
 	case query.Insert != nil:
 		insert := query.Insert
 		table, ok := db.tables[insert.Table]
