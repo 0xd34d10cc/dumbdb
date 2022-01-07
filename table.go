@@ -129,6 +129,7 @@ func (table *Table) insertInto(id PageID, rows []Row) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	defer page.Unpin()
 
 	i := 0
 	lockedPage := NewRowListPage(page)
@@ -193,11 +194,13 @@ func (table *Table) SelectAll() ([]Row, error) {
 		}
 
 		lockedPage := NewRowListPage(page)
-		defer lockedPage.Unlock()
 		for i := 0; i < lockedPage.NumRows(); i++ {
 			row := lockedPage.ReadRow(i, &table.schema)
 			rows = append(rows, row)
 		}
+
+		page.Unpin()
+		lockedPage.Unlock()
 	}
 	return rows, nil
 }

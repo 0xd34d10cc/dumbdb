@@ -279,11 +279,13 @@ func NewBTree(pager *Pager) (*BTree, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer left.page.Unpin()
 
 	rightID, right, err := tree.allocateNode(true)
 	if err != nil {
 		return nil, err
 	}
+	defer right.page.Unpin()
 
 	tree.root.insertBranch(BTreeKey(0), leftID)
 	tree.root.next = rightID
@@ -294,6 +296,10 @@ func NewBTree(pager *Pager) (*BTree, error) {
 	right.writeHeader()
 	tree.root.writeHeader()
 	return tree, nil
+}
+
+func (tree *BTree) Close() {
+	tree.root.page.Unpin()
 }
 
 func (tree *BTree) allocateNode(isLeaf bool) (PageID, BTreeNode, error) {
@@ -352,15 +358,18 @@ func getMaxKey(node *BTreeNode, pager *Pager) (BTreeKey, error) {
 	for {
 		if node.isLeaf {
 			k, _ := node.getLeaf(node.len() - 1)
+			node.page.Unpin()
 			return k, nil
 		}
 
 		page, err := pager.FetchPage(node.next)
 		if err != nil {
+			node.page.Unpin()
 			return BTreeKey(0), err
 		}
 
 		nextNode := readNode(page)
+		node.page.Unpin()
 		node = &nextNode
 	}
 }
@@ -376,6 +385,7 @@ func (tree *BTree) splitBranch(path []*BTreeNode, key BTreeKey) (mid BTreeKey, r
 		if err != nil {
 			return
 		}
+		defer parent.page.Unpin()
 
 		left := path[0]
 		var rightID PageID
@@ -390,8 +400,18 @@ func (tree *BTree) splitBranch(path []*BTreeNode, key BTreeKey) (mid BTreeKey, r
 		left.writeHeader()
 		right.writeHeader()
 
+		prevRoot := tree.root.page
+		// we are inside an Insert(), so root should be locked
+		parent.page.Pin()
+		parent.page.Lock()
+
+		// update pointers
 		tree.root = parent
 		tree.rootID = parentID
+
+		// release previous root
+		prevRoot.Unlock()
+		prevRoot.Unpin()
 		return
 	}
 
@@ -404,6 +424,7 @@ func (tree *BTree) splitBranch(path []*BTreeNode, key BTreeKey) (mid BTreeKey, r
 		if err != nil {
 			return
 		}
+		defer parentRhs.page.Unpin()
 
 		if key > parentMid {
 			parent = &parentRhs
@@ -448,6 +469,7 @@ func (tree *BTree) insertLeafOverflow(node *BTreeNode, parent *BTreeNode, key BT
 	if err != nil {
 		return err
 	}
+	defer newLeaf.page.Unpin()
 
 	if key < mid {
 		node.insertLeaf(key, value)
@@ -468,8 +490,6 @@ func (tree *BTree) insertLeafOverflow(node *BTreeNode, parent *BTreeNode, key BT
 	node.next = newLeafID
 
 	if newLeaf.next != InvalidPageID {
-		// FIXME: FetchPage() could randomly evict & sync one of |node|, |newLeaf| or |parent|
-		//        which can lead to inconsistencies, because we are not syncing pages explicitly here
 		nextPage, err := tree.pager.FetchPage(newLeaf.next)
 		if err != nil {
 			return err
@@ -478,6 +498,7 @@ func (tree *BTree) insertLeafOverflow(node *BTreeNode, parent *BTreeNode, key BT
 		nextNode := readNode(nextPage)
 		nextNode.prev = newLeafID
 		nextNode.writeHeader()
+		nextNode.page.Unpin()
 	}
 
 	// attach |node| back with key=mid
@@ -508,6 +529,7 @@ func (tree *BTree) insertSlow(path []*BTreeNode, key BTreeKey, value BTreeValue)
 		if err != nil {
 			return err
 		}
+		defer rhs.page.Unpin()
 
 		if key > mid {
 			parent = &rhs
@@ -528,8 +550,11 @@ func (tree *BTree) insertSlow(path []*BTreeNode, key BTreeKey, value BTreeValue)
 //       space for merge op - on 2nd pass with write locks. With read locks we _assume_ split
 //       will not happen, so we can just release lock above as soon as we get the lock to the node below
 func (tree *BTree) Insert(key BTreeKey, value BTreeValue) error {
+	// NOTE: root can change because of splits
 	tree.root.page.Lock()
-	defer tree.root.page.Unlock()
+	defer func(tree *BTree) {
+		tree.root.page.Unlock()
+	}(tree)
 
 	depth := 0
 	var path [12]*BTreeNode
@@ -537,6 +562,13 @@ func (tree *BTree) Insert(key BTreeKey, value BTreeValue) error {
 	path[depth] = &tree.root
 	node := path[depth]
 	depth++
+
+	defer func() {
+		for i := 1; i < depth; i++ {
+			path[i].page.Unpin()
+		}
+	}()
+
 	for {
 		if node.isLeaf {
 			// fast path
@@ -594,6 +626,7 @@ func (cursor *Cursor) Forward() bool {
 			return false
 		}
 
+		cursor.node.page.Unpin()
 		cursor.node = readNode(page)
 		cursor.idx = 0
 		return true
@@ -612,6 +645,7 @@ func (cursor *Cursor) Err() error {
 func (cursor *Cursor) Close() {
 	if cursor.root != nil {
 		cursor.root.RUnlock()
+		cursor.node.page.Unpin()
 	}
 }
 
@@ -647,6 +681,9 @@ func (tree *BTree) Search(key BTreeKey) Cursor {
 		}
 
 		nextNode := readNode(page)
+		if !nextNode.isLeaf {
+			defer nextNode.page.Unpin()
+		}
 		node = nextNode
 	}
 }

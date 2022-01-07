@@ -11,6 +11,7 @@ type LRUNode struct {
 }
 
 type LRUCache struct {
+	// NOTE: we can't take advantage of RWLock here, because Get() modifies recentlyUsed
 	m            sync.Mutex
 	values       map[PageID]*LRUNode
 	recentlyUsed *LRUNode // most recently used node
@@ -33,6 +34,7 @@ func (cache *LRUCache) Get(id PageID) *Page {
 	node, ok := cache.values[id]
 	if ok {
 		cache.markUsed(node)
+		node.page.Pin()
 		return node.page
 	}
 	return nil
@@ -94,13 +96,26 @@ func (cache *LRUCache) Put(id PageID, page *Page) (evictedID PageID, evictedPage
 		// generally this should never happen
 		evictedID = node.id
 		evictedPage = node.page
+		if evictedPage.IsPinned() {
+			panic("Attempt to replace a pinned page")
+		}
+
 	} else if len(cache.values) >= cache.capacity {
 		// reached max capacity
 		// reuse evicted node allocation
 		node = cache.leastUsed
-		delete(cache.values, cache.leastUsed.id)
-		evictedID = cache.leastUsed.id
-		evictedPage = cache.leastUsed.page
+		for node != nil && node.page.IsPinned() {
+			node = node.next
+		}
+
+		if node == nil {
+			// TODO: handle this case normally
+			panic("All cache pages are pinned")
+		}
+
+		delete(cache.values, node.id)
+		evictedID = node.id
+		evictedPage = node.page
 	} else {
 		// no eviction
 		node = &LRUNode{}

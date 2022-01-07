@@ -79,15 +79,12 @@ func debugLeaf(node *BTreeNode) {
 }
 
 func debugTree(t *testing.T, root *BTreeNode, pager *Pager, depth int) {
-	for i := 0; i < root.len(); i++ {
-		key, id := root.getBranch(i)
-		fmt.Printf("%v", strings.Repeat("\t", depth))
-		fmt.Printf("%v) %v -> %v: ", i, key, id)
-
+	printPage := func(id PageID) {
 		page, err := pager.FetchPage(id)
 		if err != nil {
 			t.Fatal(err)
 		}
+		defer page.Unpin()
 
 		node := readNode(page)
 		if !node.isLeaf {
@@ -100,11 +97,19 @@ func debugTree(t *testing.T, root *BTreeNode, pager *Pager, depth int) {
 		}
 	}
 
+	for i := 0; i < root.len(); i++ {
+		key, id := root.getBranch(i)
+		fmt.Printf("%v", strings.Repeat("\t", depth))
+		fmt.Printf("%v) %v -> %v: ", i, key, id)
+		printPage(id)
+	}
+
 	if root.next != InvalidPageID {
 		page, err := pager.FetchPage(root.next)
 		if err != nil {
 			t.Fatal(err)
 		}
+		defer page.Unpin()
 
 		fmt.Printf("%v", strings.Repeat("\t", depth))
 		node := readNode(page)
@@ -158,15 +163,18 @@ func TestInsert(t *testing.T) {
 	storage := &MemoryStorage{
 		data: make([]byte, 0),
 	}
-	pager, err := NewPager(1024, storage)
+
+	pager, err := NewPager(20, storage)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer pager.SyncAll()
 
 	tree, err := NewBTree(pager)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer tree.Close()
 
 	const nEntries = 32
 

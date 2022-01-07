@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 )
 
 type PageID uint32
@@ -50,25 +51,64 @@ func UnlockPageID(id PageID) {
 }
 
 type Page struct {
+	pinCount int32
+
 	// protects access to data
 	m     sync.RWMutex
+	id    PageID
 	dirty bool
 	data  [PageSize]byte
 }
 
+func (page *Page) IsPinned() bool {
+	return atomic.LoadInt32(&page.pinCount) != 0
+}
+
+func (page *Page) Pin() {
+	// fmt.Fprintln(os.Stderr, "==================================")
+	// fmt.Fprintln(os.Stderr, page.id, "pinned at")
+	// debug.PrintStack()
+
+	atomic.AddInt32(&page.pinCount, 1)
+}
+
+func (page *Page) Unpin() {
+	// fmt.Fprintln(os.Stderr, "==================================")
+	// fmt.Fprintln(os.Stderr, page.id, "unpinned at")
+	// debug.PrintStack()
+
+	atomic.AddInt32(&page.pinCount, -1)
+}
+
 func (page *Page) RLock() {
+	// fmt.Fprintln(os.Stderr, "==================================")
+	// fmt.Fprintln(os.Stderr, page.id, "r-locked at")
+	// debug.PrintStack()
+
 	page.m.RLock()
 }
 
 func (page *Page) RUnlock() {
+	// fmt.Fprintln(os.Stderr, "==================================")
+	// fmt.Fprintln(os.Stderr, page.id, "r-unlocked at")
+	// debug.PrintStack()
+
 	page.m.RUnlock()
 }
 
 func (page *Page) Lock() {
+	// fmt.Fprintln(os.Stderr, "==================================")
+	// fmt.Fprintln(os.Stderr, page.id, "w-locked at")
+	// debug.PrintStack()
+
 	page.m.Lock()
 }
 
 func (page *Page) Unlock() {
+	// fmt.Fprintln(os.Stderr, "==================================")
+	// fmt.Fprintln(os.Stderr, page.id, "w-unlocked at")
+	// debug.PrintStack()
+
 	page.m.Unlock()
 }
 
@@ -272,19 +312,24 @@ func (pager *Pager) FetchPage(id PageID) (*Page, error) {
 		UnlockPageID(id)
 		return nil, err
 	}
+	page.Pin()
 
 	// put page in cache
 	evictedID, evictedPage := pager.cache.Put(id, page)
 	UnlockPageID(id)
 
 	if evictedID != InvalidPageID {
-		// FIXME: this could cause a deadlock if current thread holds a locked reference to evictedPage
-		// evictedPage.RLock()
+		// NOTE: this can't deadlock, because evictedPage is unpinned
+		evictedPage.RLock()
 		err = pager.SyncPage(evictedID, evictedPage)
-		// evictedPage.RUnlock()
+		evictedPage.RUnlock()
+		if err != nil {
+			page.Unpin()
+			return nil, err
+		}
 	}
 
-	return page, err
+	return page, nil
 }
 
 // Allocate a new page on the disk, this only changes the metadata
@@ -305,6 +350,10 @@ func (pager *Pager) AllocatePage() (PageID, error) {
 
 // Flush page to disk, page have to be locked
 func (pager *Pager) SyncPage(id PageID, page *Page) error {
+	if page.IsPinned() {
+		panic(fmt.Sprintf("Attempt to sync a pinned page ID=%v", id))
+	}
+
 	if !page.IsDirty() {
 		// no changes in page, nothing to sync
 		return nil
@@ -401,7 +450,13 @@ func (pager *Pager) readPage(id PageID) (*Page, error) {
 	index.RUnlock()
 
 	// FIXME: it is possible for id -> offset mapping to change while we are doing IO
-	return pager.readPageAt(offset)
+	page, err := pager.readPageAt(offset)
+	if err != nil {
+		return nil, err
+	}
+
+	page.id = id
+	return page, nil
 }
 
 // Write page at offset
