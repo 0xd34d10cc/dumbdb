@@ -186,24 +186,34 @@ func (table *Table) Insert(rows []Row) error {
 	}
 }
 
-func (table *Table) SelectAll() ([]Row, error) {
-	rows := make([]Row, 0)
-	for id := table.pager.FirstPage(); id != InvalidPageID; id = table.pager.NextPage(id) {
-		page, err := table.pager.FetchPage(id)
-		if err != nil {
-			return nil, err
-		}
-
-		lockedPage := NewRowListPage(page)
-		for i := 0; i < lockedPage.NumRows(); i++ {
-			row := lockedPage.ReadRow(i, &table.schema)
-			rows = append(rows, row)
-		}
-
-		page.Unpin()
-		lockedPage.Unlock()
+func (table *Table) ScanPage(id PageID, onRow func(Row) error) error {
+	page, err := table.pager.FetchPage(id)
+	if err != nil {
+		return err
 	}
-	return rows, nil
+	defer page.Unpin()
+
+	lockedPage := NewRowListPage(page)
+	defer lockedPage.Unlock()
+	for i := 0; i < lockedPage.NumRows(); i++ {
+		row := lockedPage.ReadRow(i, &table.schema)
+		err := onRow(row)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (table *Table) Scan(onRow func(Row) error) error {
+	for id := table.pager.FirstPage(); id != InvalidPageID; id = table.pager.NextPage(id) {
+		err := table.ScanPage(id, onRow)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (table *Table) Close() error {
