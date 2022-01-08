@@ -14,23 +14,24 @@ var (
 )
 
 type MemoryStorage struct {
-	data []byte
-	off  int64
+	pages [][PageSize]byte
+	off   int64
+}
+
+func (s *MemoryStorage) TotalLen() int64 {
+	return int64(len(s.pages)) * int64(PageSize)
 }
 
 func (s *MemoryStorage) Truncate(size int64) error {
-	if int64(len(s.data)) == size {
-		return nil
+	for s.TotalLen() < size {
+		s.pages = append(s.pages, [PageSize]byte{})
 	}
-
-	newData := make([]byte, int(size))
-	copy(newData, s.data)
-	s.data = newData
 	return nil
 }
 
 func (s *MemoryStorage) ReadAt(buf []byte, off int64) (n int, err error) {
-	n = copy(buf, s.data[off:])
+	idx := off / int64(PageSize)
+	n = copy(buf, s.pages[idx][:])
 	if n != len(buf) {
 		err = ErrPartialRead
 	}
@@ -38,7 +39,8 @@ func (s *MemoryStorage) ReadAt(buf []byte, off int64) (n int, err error) {
 }
 
 func (s *MemoryStorage) WriteAt(buf []byte, off int64) (n int, err error) {
-	n = copy(s.data[off:], buf)
+	idx := off / int64(PageSize)
+	n = copy(s.pages[idx][:], buf)
 	if n != len(buf) {
 		err = ErrPartialWrite
 	}
@@ -52,7 +54,7 @@ func (s *MemoryStorage) Seek(diff int64, whence int) (newOff int64, err error) {
 	case io.SeekStart:
 		s.off = diff
 	case io.SeekEnd:
-		s.off = int64(len(s.data)) + diff
+		s.off = s.TotalLen() + diff
 	}
 	newOff = s.off
 	return
@@ -161,7 +163,8 @@ func checkValid(t *testing.T, tree *BTree, searchFrom int, nEntries int, tillEnd
 
 func TestInsert(t *testing.T) {
 	storage := &MemoryStorage{
-		data: make([]byte, 0),
+		pages: make([][PageSize]byte, 0),
+		off:   0,
 	}
 
 	pager, err := NewPager(20, storage)
