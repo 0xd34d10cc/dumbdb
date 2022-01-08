@@ -83,8 +83,14 @@ type Insert struct {
 	Rows  []RowPtr `"values" @@ ("," @@)*`
 }
 
+type Projection struct {
+	All    bool     `@"*"`
+	Fields []string `| @Ident ("," @Ident)*`
+}
+
 type Select struct {
-	Table string `"select" "*" "from" @Ident`
+	Projection Projection `"select" @@`
+	Table      string     `"from" @Ident`
 }
 
 // see https://sqlite.org/syntaxdiagrams.html

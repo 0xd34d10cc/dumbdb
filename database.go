@@ -179,15 +179,32 @@ func (db *Database) Execute(query *Query) (*Result, error) {
 			return nil, ErrNoSuchTable
 		}
 
-		rows, err := table.SelectAll()
+		var result Result
+		var err error
+
+		result.rows, err = table.SelectAll()
 		if err != nil {
 			return nil, err
 		}
 
-		return &Result{
-			schema: table.schema,
-			rows:   rows,
-		}, nil
+		if q.Projection.All {
+			result.schema = table.schema
+		} else {
+			newSchema, indexes, err := table.schema.Project(q.Projection.Fields)
+			if err != nil {
+				return nil, err
+			}
+
+			projectedRows := make([]Row, 0, len(result.rows))
+			for _, row := range result.rows {
+				projectedRows = append(projectedRows, row.Project(indexes))
+			}
+
+			result.rows = projectedRows
+			result.schema = newSchema
+		}
+
+		return &result, nil
 	default:
 		return nil, ErrUnhandledQuery
 	}

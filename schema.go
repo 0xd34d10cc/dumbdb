@@ -109,14 +109,26 @@ func (val *Value) String() string {
 
 type Row []Value
 
+func (row *Row) Project(indexes []int) Row {
+	values := []Value(*row)
+	newRow := make([]Value, 0, len(indexes))
+	for _, idx := range indexes {
+		newRow = append(newRow, values[idx])
+	}
+	return newRow
+}
+
 type Schema struct {
 	Fields   []Field `json:"fields"`
 	TotalLen int     `json:"total_len"`
 }
 
 func NewSchema(desc []FieldDescription) Schema {
-	totalLen := 0
-	fields := make([]Field, 0, len(desc))
+	schema := Schema{
+		Fields:   make([]Field, 0, len(desc)),
+		TotalLen: 0,
+	}
+
 	for _, field := range desc {
 		f := Field{
 			Name: field.Name,
@@ -131,14 +143,25 @@ func NewSchema(desc []FieldDescription) Schema {
 		default:
 			panic("unhandled type")
 		}
-		totalLen += int(f.Len)
-		fields = append(fields, f)
+
+		schema.addField(f)
 	}
 
-	return Schema{
-		Fields:   fields,
-		TotalLen: totalLen,
+	return schema
+}
+
+func (schema *Schema) addField(field Field) {
+	schema.TotalLen += int(field.Len)
+	schema.Fields = append(schema.Fields, field)
+}
+
+func (schema *Schema) getField(name string) (int, Field) {
+	for idx, field := range schema.Fields {
+		if field.Name == name {
+			return idx, field
+		}
 	}
+	return -1, Field{}
 }
 
 func (schema *Schema) RowSize() int {
@@ -167,6 +190,23 @@ func (schema *Schema) Typecheck(row Row) error {
 	}
 
 	return nil
+}
+
+func (schema *Schema) Project(names []string) (Schema, []int, error) {
+	indexes := make([]int, 0, len(names))
+	newSchema := Schema{}
+	for _, fieldName := range names {
+		idx, field := schema.getField(fieldName)
+		if idx == -1 {
+			return Schema{}, nil, fmt.Errorf("no column named %v in the schema", fieldName)
+		}
+
+		indexes = append(indexes, idx)
+		newSchema.addField(field)
+
+	}
+
+	return newSchema, indexes, nil
 }
 
 func (schema *Schema) ReadRow(data []byte, row *Row) error {

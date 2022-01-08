@@ -140,6 +140,7 @@ func (table *Table) insertInto(id PageID, rows []Row) (int, error) {
 
 	if i != 0 {
 		lockedPage.Commit()
+		// TODO: remove this sync() after implementing WAL
 		err := table.pager.SyncPage(id, page)
 		if err != nil {
 			lockedPage.Rollback()
