@@ -179,6 +179,11 @@ func (db *Database) Execute(query *Query) (*Result, error) {
 			return nil, ErrNoSuchTable
 		}
 
+		if q.Where != nil {
+			return nil, errors.New("where clause is not supported yet")
+		}
+
+		// FIXME: we are basically loading whole table in the memory here
 		result := Result{
 			rows:   make([]Row, 0),
 			schema: table.schema,

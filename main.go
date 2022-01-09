@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -35,6 +36,13 @@ func RunCLI(history string, db *Database) {
 		if err != nil {
 			fmt.Println("Failed to parse query:", err)
 			continue
+		}
+
+		const DumpAST = true
+		if DumpAST {
+			encoder := json.NewEncoder(os.Stdout)
+			encoder.SetIndent("", " ")
+			encoder.Encode(query)
 		}
 
 		result, err := db.Execute(query)
