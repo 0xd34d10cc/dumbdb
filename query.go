@@ -38,12 +38,12 @@ type Drop struct {
 }
 
 // Same as Value, but based on pointers
-type ValuePtr struct {
+type Literal struct {
 	Int *int32  `@Int`
 	Str *string `| @String`
 }
 
-func (val *ValuePtr) ToValue() Value {
+func (val *Literal) ToValue() Value {
 	switch {
 	case val.Int != nil:
 		return Value{
@@ -60,11 +60,11 @@ func (val *ValuePtr) ToValue() Value {
 	panic("unhandled type")
 }
 
-type RowPtr struct {
-	Values []ValuePtr `"(" @@ ("," @@)* ")"`
+type Tuple struct {
+	Values []Literal `"(" @@ ("," @@)* ")"`
 }
 
-func (row *RowPtr) ToRow() Row {
+func (row *Tuple) ToRow() Row {
 	values := make([]Value, 0, len(row.Values))
 	for _, val := range row.Values {
 		values = append(values, val.ToValue())
@@ -72,7 +72,7 @@ func (row *RowPtr) ToRow() Row {
 	return values
 }
 
-func ConvertRows(ptrs []RowPtr) []Row {
+func ConvertRows(ptrs []Tuple) []Row {
 	rows := make([]Row, 0, len(ptrs))
 	for _, row := range ptrs {
 		rows = append(rows, row.ToRow())
@@ -81,8 +81,8 @@ func ConvertRows(ptrs []RowPtr) []Row {
 }
 
 type Insert struct {
-	Table string   `"insert" "into" @Ident`
-	Rows  []RowPtr `"values" @@ ("," @@)*`
+	Table string  `"insert" "into" @Ident`
+	Rows  []Tuple `"values" @@ ("," @@)*`
 }
 
 type Projection struct {
@@ -137,7 +137,7 @@ func (o *Op) Capture(s []string) error {
 }
 
 type ComplexValue struct {
-	Const   *ValuePtr   `@@`
+	Const   *Literal    `@@`
 	Field   string      `| @Ident`
 	Subexpr *Expression `| "(" @@ ")"`
 }

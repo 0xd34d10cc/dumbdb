@@ -18,6 +18,13 @@ type MemoryStorage struct {
 	off   int64
 }
 
+func NewMemoryStorage() *MemoryStorage {
+	return &MemoryStorage{
+		pages: make([][PageSize]byte, 0),
+		off:   0,
+	}
+}
+
 func (s *MemoryStorage) TotalLen() int64 {
 	return int64(len(s.pages)) * int64(PageSize)
 }
@@ -161,12 +168,63 @@ func checkValid(t *testing.T, tree *BTree, searchFrom int, nEntries int, tillEnd
 	}
 }
 
-func TestInsert(t *testing.T) {
-	storage := &MemoryStorage{
-		pages: make([][PageSize]byte, 0),
-		off:   0,
+const PrintTree = false
+
+func TestSearch(t *testing.T) {
+	storage := NewMemoryStorage()
+	pager, err := NewPager(20, storage)
+	if err != nil {
+		t.Fatal(err)
 	}
 
+	tree, err := NewBTree(pager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tree.Close()
+
+	values := []struct {
+		Key uint32
+		Val uint32
+	}{
+		{1, 2},
+		{10, 20},
+		{30, 60},
+		{50, 100},
+		{70, 140},
+	}
+
+	for _, pair := range values {
+		err := tree.Insert(BTreeKey(pair.Key), BTreeValue(pair.Val))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	checkSearch := func(key uint32, expectedKey uint32, expectedVal uint32) {
+		cursor := tree.Search(BTreeKey(key))
+		if cursor.Err() != nil {
+			t.Fatal(cursor.Err())
+		}
+		defer cursor.Close()
+
+		gotKey, gotVal := cursor.Get()
+		if gotKey != BTreeKey(expectedKey) {
+			t.Fatalf("Unexpected key %v, expected %v", gotKey, expectedKey)
+		}
+
+		if gotVal != BTreeValue(expectedVal) {
+			t.Fatalf("Unexpected val %v, expected %v", gotKey, expectedKey)
+		}
+	}
+
+	checkSearch(5, 10, 20)
+	checkSearch(11, 30, 60)
+	checkSearch(69, 70, 140)
+}
+
+func TestInsert(t *testing.T) {
+	storage := NewMemoryStorage()
 	pager, err := NewPager(20, storage)
 	if err != nil {
 		t.Fatal(err)
@@ -189,8 +247,10 @@ func TestInsert(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		debugTree(t, &tree.root, pager, 0)
-		fmt.Println("---------------------------------")
+		if PrintTree {
+			debugTree(t, &tree.root, pager, 0)
+			fmt.Println("---------------------------------")
+		}
 		checkValid(t, tree, key, nEntries, true)
 	}
 
@@ -202,8 +262,10 @@ func TestInsert(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		debugTree(t, &tree.root, pager, 0)
-		fmt.Println("---------------------------------")
+		if PrintTree {
+			debugTree(t, &tree.root, pager, 0)
+			fmt.Println("---------------------------------")
+		}
 		checkValid(t, tree, 0, key+1, false)
 		checkValid(t, tree, nEntries/2, nEntries, true)
 	}
