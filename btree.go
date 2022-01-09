@@ -5,16 +5,16 @@ import (
 )
 
 // TODO: move to a different file
-type RowID PageID
+type RowID uint32
 
 func (id RowID) PageID() PageID {
 	val := uint32(id)
-	return PageID(val & 0x00ffffff)
+	return PageID(val >> 8)
 }
 
 func (id RowID) RowIndex() uint8 {
 	val := uint32(id)
-	return uint8(val >> 24)
+	return uint8(val & 0xff)
 }
 
 // B+ tree is

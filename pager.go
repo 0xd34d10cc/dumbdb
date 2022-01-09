@@ -51,11 +51,16 @@ func UnlockPageID(id PageID) {
 }
 
 type Page struct {
+	// Number of threads which use this page currently (pager references don't count)
+	// When pinCount > 0 page cannot be evicted from page cache
 	pinCount int32
 
-	// protects access to data
-	m     sync.RWMutex
-	id    PageID
+	// This field is read-only
+	id PageID
+
+	// Protects access to data
+	m sync.RWMutex
+	// true if data was modified and doesn't match what's in persistent storage
 	dirty bool
 	data  [PageSize]byte
 }
@@ -77,7 +82,9 @@ func (page *Page) Unpin() {
 	// fmt.Fprintln(os.Stderr, page.id, "unpinned at")
 	// debug.PrintStack()
 
-	atomic.AddInt32(&page.pinCount, -1)
+	if atomic.AddInt32(&page.pinCount, -1) < 0 {
+		panic("Unpin() called on page that is not pinned")
+	}
 }
 
 func (page *Page) RLock() {
@@ -296,6 +303,7 @@ func NewPager(maxPages int, storage Storage) (*Pager, error) {
 }
 
 // Obtain a page by id
+// returns pinned page or error, if any
 func (pager *Pager) FetchPage(id PageID) (*Page, error) {
 	LockPageID(id)
 

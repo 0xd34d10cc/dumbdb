@@ -104,6 +104,9 @@ const (
 	OpLessOrEq
 	OpGreater
 	OpGreaterOrEq
+
+	OpOr
+	OpAnd
 )
 
 func (o *Op) Capture(s []string) error {
@@ -130,6 +133,11 @@ func (o *Op) Capture(s []string) error {
 	case ">=":
 		*o = OpGreaterOrEq
 
+	case "or":
+		*o = OpOr
+	case "and":
+		*o = OpAnd
+
 	default:
 		return fmt.Errorf("unexpected op %v", s)
 	}
@@ -142,18 +150,14 @@ type ComplexValue struct {
 	Subexpr *Expression `| "(" @@ ")"`
 }
 
-type Factor struct {
-	Value *ComplexValue `@@`
-}
-
 type OpFactor struct {
-	Op     Op      `@("*" | "/")`
-	Factor *Factor `@@`
+	Op     Op            `@("*" | "/")`
+	Factor *ComplexValue `@@`
 }
 
 type Term struct {
-	Left  *Factor     `@@`
-	Right []*OpFactor `@@*`
+	Left  *ComplexValue `@@`
+	Right []*OpFactor   `@@*`
 }
 
 type OpTerm struct {
@@ -161,9 +165,52 @@ type OpTerm struct {
 	Term *Term `@@`
 }
 
-type Expression struct {
+type Comp struct {
 	Left  *Term     `@@`
-	Right []*OpTerm `@@*`
+	Right []*OpComp `@@*`
+}
+
+type OpComp struct {
+	Op    Op    `@("<" | "<=" | ">" | ">=" | "=" | "!=")`
+	Right *Comp `@@`
+}
+
+type Conj struct {
+	Left  *Comp     `@@`
+	Right []*OpConj `@@*`
+}
+
+type OpConj struct {
+	Op    Op    `@"and"`
+	Right *Conj `@@`
+}
+
+type Disj struct {
+	Left  *Conj     `@@`
+	Right []*OpDisj `@@*`
+}
+
+type OpDisj struct {
+	Op    Op    `@"or"`
+	Right *Disj `@@`
+}
+
+// Expr ::= Disj
+// Disj ::= Conj ('!!' Conj)*
+// Conj ::= Comp ('&&' Comp)*
+// Comp ::= Arithm ( '<'  Arithm
+//                 | '<=' Arithm
+//                 | '>'  Arithm
+//                 | '>=' Arithm
+//                 | '==' Arithm
+//                 | '!=' Arithm)*
+//
+// Arithm ::= Term ('+' Term | '-' Term)*
+// Term ::= Factor ('*' Factor | '/' Factor | '%' Factor)*
+// Factor ::= ['-'] (Var | Number | '(' Expr ')')
+type Expression struct {
+	Left  *Disj     `@@`
+	Right []*OpDisj `@@*`
 }
 
 type Select struct {

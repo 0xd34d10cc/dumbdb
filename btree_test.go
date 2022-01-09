@@ -168,8 +168,6 @@ func checkValid(t *testing.T, tree *BTree, searchFrom int, nEntries int, tillEnd
 	}
 }
 
-const PrintTree = false
-
 func TestSearch(t *testing.T) {
 	storage := NewMemoryStorage()
 	pager, err := NewPager(20, storage)
@@ -238,6 +236,7 @@ func TestInsert(t *testing.T) {
 	defer tree.Close()
 
 	const nEntries = 32
+	const PrintTree = false
 
 	// insert high keys
 	for key := nEntries - 1; key >= nEntries/2; key-- {
