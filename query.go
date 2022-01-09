@@ -150,14 +150,19 @@ type ComplexValue struct {
 	Subexpr *Expression `| "(" @@ ")"`
 }
 
+type Factor struct {
+	Left *ComplexValue `@@`
+	Rest []*OpFactor   `@@*`
+}
+
 type OpFactor struct {
-	Op     Op            `@("*" | "/")`
-	Factor *ComplexValue `@@`
+	Op    Op      `@("*" | "/")`
+	Right *Factor `@@`
 }
 
 type Term struct {
-	Left  *ComplexValue `@@`
-	Right []*OpFactor   `@@*`
+	Left *Factor   `@@`
+	Rest []*OpTerm `@@*`
 }
 
 type OpTerm struct {
@@ -166,8 +171,8 @@ type OpTerm struct {
 }
 
 type Comp struct {
-	Left  *Term     `@@`
-	Right []*OpComp `@@*`
+	Left *Term     `@@`
+	Rest []*OpComp `@@*`
 }
 
 type OpComp struct {
@@ -176,8 +181,8 @@ type OpComp struct {
 }
 
 type Conj struct {
-	Left  *Comp     `@@`
-	Right []*OpConj `@@*`
+	Left *Comp     `@@`
+	Rest []*OpConj `@@*`
 }
 
 type OpConj struct {
@@ -186,8 +191,8 @@ type OpConj struct {
 }
 
 type Disj struct {
-	Left  *Conj     `@@`
-	Right []*OpDisj `@@*`
+	Left *Conj     `@@`
+	Rest []*OpDisj `@@*`
 }
 
 type OpDisj struct {
