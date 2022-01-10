@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/olekukonko/tablewriter"
 )
@@ -43,8 +44,12 @@ func (result *Result) FormatTable(w io.Writer) {
 const MetadataFilename string = "metadata.json"
 
 type Database struct {
+	// read-only
 	dataDir string
-	tables  map[string]*Table
+
+	// protects tables map
+	m      sync.RWMutex
+	tables map[string]*Table
 }
 
 func NewDatabase(dataDir string) (*Database, error) {
@@ -80,6 +85,9 @@ func NewDatabase(dataDir string) (*Database, error) {
 }
 
 func (db *Database) Close() error {
+	db.m.RLock()
+	defer db.m.RUnlock()
+
 	err := db.saveMetadata()
 	if err != nil {
 		return err
@@ -109,118 +117,140 @@ func (db *Database) saveMetadata() error {
 	return ioutil.WriteFile(filepath.Join(db.dataDir, MetadataFilename), data, 0600)
 }
 
-func (db *Database) Execute(query *Query) (*Result, error) {
-	switch {
-	case query.Create != nil:
-		create := query.Create
-		_, ok := db.tables[create.Table]
-		if ok {
-			return nil, ErrTableAlreadyExist
-		}
+func (db *Database) doCreate(create *Create) (*Result, error) {
+	db.m.Lock()
+	defer db.m.Unlock()
 
-		schema := NewSchema(create.Fields)
-		table, err := NewTable(create.Table, schema)
-		if err != nil {
-			return nil, err
-		}
+	_, ok := db.tables[create.Table]
+	if ok {
+		return nil, ErrTableAlreadyExist
+	}
 
-		db.tables[create.Table] = table
-		err = db.saveMetadata()
-		if err != nil {
-			delete(db.tables, create.Table)
-			return nil, err
-		}
-	case query.Drop != nil:
-		drop := query.Drop
-		table, ok := db.tables[drop.Table]
-		if !ok {
-			return nil, ErrTableDoesNotExist
-		}
-
-		delete(db.tables, drop.Table)
-		filename := table.file.Name()
-		// FIXME: this flushes all caches to disk, which is unnecessary
-		//        because we are going to delete the file anyway
-		err := table.Close()
-		if err != nil {
-			return nil, err
-		}
-
-		err = os.Remove(filename)
-		if err != nil {
-			return nil, err
-		}
-
-		err = db.saveMetadata()
+	schema := NewSchema(create.Fields)
+	table, err := NewTable(create.Table, schema)
+	if err != nil {
 		return nil, err
-	case query.Insert != nil:
-		insert := query.Insert
-		table, ok := db.tables[insert.Table]
-		if !ok {
-			return nil, ErrNoSuchTable
-		}
+	}
 
-		rows := ConvertRows(insert.Rows)
-		for i, row := range rows {
-			err := table.schema.Typecheck(row)
-			if err != nil {
-				return nil, fmt.Errorf("row #%d %v", i, err)
-			}
-		}
-
-		err := table.Insert(rows)
-		if err != nil {
-			return nil, err
-		}
-	case query.Select != nil:
-		q := query.Select
-		table, ok := db.tables[q.Table]
-		if !ok {
-			return nil, ErrNoSuchTable
-		}
-
-		if q.Where != nil {
-			return nil, errors.New("where clause is not supported yet")
-		}
-
-		// FIXME: we are basically loading whole table in the memory here
-		result := Result{
-			rows:   make([]Row, 0),
-			schema: table.schema,
-		}
-
-		if q.Projection.All {
-			err := table.Scan(func(r Row) error {
-				result.rows = append(result.rows, r)
-				return nil
-			})
-
-			if err != nil {
-				return nil, err
-			}
-		} else {
-			newSchema, indexes, err := table.schema.Project(q.Projection.Fields)
-			if err != nil {
-				return nil, err
-			}
-
-			err = table.Scan(func(r Row) error {
-				projectedRow := r.Project(indexes)
-				result.rows = append(result.rows, projectedRow)
-				return nil
-			})
-
-			if err != nil {
-				return nil, err
-			}
-
-			result.schema = newSchema
-		}
-
-		return &result, nil
-	default:
-		return nil, ErrUnhandledQuery
+	db.tables[create.Table] = table
+	err = db.saveMetadata()
+	if err != nil {
+		delete(db.tables, create.Table)
+		return nil, err
 	}
 
 	return nil, nil
+}
+
+func (db *Database) doDrop(drop *Drop) (*Result, error) {
+	db.m.Lock()
+	defer db.m.Unlock()
+
+	table, ok := db.tables[drop.Table]
+	if !ok {
+		return nil, ErrTableDoesNotExist
+	}
+
+	delete(db.tables, drop.Table)
+	filename := table.file.Name()
+	// FIXME: this flushes all caches to disk, which is unnecessary
+	//        because we are going to delete the file anyway
+	err := table.Close()
+	if err != nil {
+		return nil, err
+	}
+
+	err = os.Remove(filename)
+	if err != nil {
+		return nil, err
+	}
+
+	err = db.saveMetadata()
+	return nil, err
+}
+
+func (db *Database) doInsert(insert *Insert) (*Result, error) {
+	db.m.RLock()
+	defer db.m.RUnlock()
+
+	table, ok := db.tables[insert.Table]
+	if !ok {
+		return nil, ErrNoSuchTable
+	}
+
+	rows := ConvertRows(insert.Rows)
+	for i, row := range rows {
+		err := table.schema.Typecheck(row)
+		if err != nil {
+			return nil, fmt.Errorf("row #%d %v", i, err)
+		}
+	}
+
+	err := table.Insert(rows)
+	return nil, err
+}
+
+func (db *Database) doSelect(q *Select) (*Result, error) {
+	db.m.RLock()
+	defer db.m.RUnlock()
+
+	table, ok := db.tables[q.Table]
+	if !ok {
+		return nil, ErrNoSuchTable
+	}
+
+	if q.Where != nil {
+		return nil, errors.New("where clause is not supported yet")
+	}
+
+	// FIXME: make Result streaming so we don't have to load all tuples in memory
+	result := Result{
+		rows:   make([]Row, 0),
+		schema: table.schema,
+	}
+
+	if q.Projection.All {
+		err := table.Scan(func(r Row) error {
+			result.rows = append(result.rows, r)
+			return nil
+		})
+
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		newSchema, indexes, err := table.schema.Project(q.Projection.Fields)
+		if err != nil {
+			return nil, err
+		}
+
+		err = table.Scan(func(r Row) error {
+			projectedRow := r.Project(indexes)
+			result.rows = append(result.rows, projectedRow)
+			return nil
+		})
+
+		if err != nil {
+			return nil, err
+		}
+
+		result.schema = newSchema
+	}
+
+	return &result, nil
+}
+
+func (db *Database) Execute(query *Query) (*Result, error) {
+	switch {
+	case query.Create != nil:
+		return db.doCreate(query.Create)
+	case query.Drop != nil:
+		return db.doDrop(query.Drop)
+	case query.Insert != nil:
+		return db.doInsert(query.Insert)
+	case query.Select != nil:
+		return db.doSelect(query.Select)
+	default:
+		return nil, ErrUnhandledQuery
+	}
 }

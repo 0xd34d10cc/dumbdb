@@ -38,7 +38,7 @@ func RunCLI(history string, db *Database) {
 			continue
 		}
 
-		const DumpAST = true
+		const DumpAST = false
 		if DumpAST {
 			encoder := json.NewEncoder(os.Stdout)
 			encoder.SetIndent("", " ")
