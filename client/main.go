@@ -2,7 +2,6 @@ package main
 
 import (
 	"dumbdb"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -32,25 +31,6 @@ func formatTable(result *dumbdb.Result, w io.Writer) {
 	writer.Render()
 }
 
-func receiveResponse(conn net.Conn) (*dumbdb.Result, error) {
-	response, err := dumbdb.RecvMessage(conn)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(response) == 0 {
-		return nil, nil
-	}
-
-	var result dumbdb.Result
-	err = json.Unmarshal(response, &result)
-	if err != nil {
-		return nil, err
-	}
-
-	return &result, nil
-}
-
 func runCLI(history string, conn net.Conn) {
 	rl, err := readline.NewEx(&readline.Config{
 		Prompt:      "> ",
@@ -78,13 +58,19 @@ func runCLI(history string, conn net.Conn) {
 			log.Fatal("Failed to send query:", err)
 		}
 
-		response, err := receiveResponse(conn)
+		response, err := dumbdb.ReceiveResponse(conn)
 		if err != nil {
 			log.Fatal("Failed to receive resposne:", err)
 		}
 
 		if response != nil {
-			formatTable(response, os.Stdout)
+			if response.Error != "" {
+				fmt.Println("Failed to process query:", response.Error)
+			}
+
+			if response.Result != nil {
+				formatTable(response.Result, os.Stdout)
+			}
 		}
 	}
 }

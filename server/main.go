@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"dumbdb"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -38,31 +37,34 @@ func handleClient(db *dumbdb.Database, conn net.Conn) {
 
 		q, err := dumbdb.ParseQuery(query)
 		if err != nil {
-			// TODO: send error in response instead
 			log.Printf("[%v] Failed to parse query: %v\n", conn.RemoteAddr(), err)
-			break
+			// TODO: handle error?
+			dumbdb.SendResponse(conn, &dumbdb.Response{
+				Error: fmt.Sprintf("syntax error: %v", err.Error()),
+			})
+			continue
 		}
 
 		log.Printf("[%v] Running \"%v\"\n", conn.RemoteAddr(), query)
 
 		result, err := db.Execute(q)
 		if err != nil {
-			// TODO: send error in response instead
 			log.Printf("[%v] Failed to process query: %v\n", conn.RemoteAddr(), err)
-			break
+			// TODO: handle error?
+			dumbdb.SendResponse(conn, &dumbdb.Response{
+				Error: err.Error(),
+			})
+			continue
 		}
 
-		var data []byte
 		if result != nil {
-			data, err = json.Marshal(result)
-			if err != nil {
-				log.Fatal(err)
-			}
+			err = dumbdb.SendResponse(conn, &dumbdb.Response{
+				Result: result,
+			})
 		} else {
-			data = []byte("")
+			err = dumbdb.SendMessage(conn, []byte(""))
 		}
 
-		err = dumbdb.SendMessage(conn, data)
 		if err != nil {
 			log.Printf("[%v] Failed to send response: %v\n", conn.RemoteAddr(), err)
 			break

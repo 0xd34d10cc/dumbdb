@@ -2,6 +2,7 @@ package dumbdb
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -53,4 +54,37 @@ func RecvMessage(conn net.Conn) ([]byte, error) {
 	response := make([]byte, responseLen)
 	_, err = io.ReadFull(conn, response)
 	return response, err
+}
+
+type Response struct {
+	Result *Result `json:",omitempty"`
+	Error  string  `json:",omitempty"`
+}
+
+func SendResponse(conn net.Conn, response *Response) error {
+	message, err := json.Marshal(response)
+	if err != nil {
+		return err
+	}
+
+	return SendMessage(conn, message)
+}
+
+func ReceiveResponse(conn net.Conn) (*Response, error) {
+	response, err := RecvMessage(conn)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(response) == 0 {
+		return nil, nil
+	}
+
+	var result Response
+	err = json.Unmarshal(response, &result)
+	if err != nil {
+		return nil, err
+	}
+
+	return &result, nil
 }
