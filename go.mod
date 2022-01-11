@@ -1,4 +1,4 @@
-module db
+module dumbdb
 
 go 1.16
 
