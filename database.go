@@ -1,16 +1,13 @@
-package main
+package dumbdb
 
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"os"
 	"path/filepath"
 	"sync"
-
-	"github.com/olekukonko/tablewriter"
 )
 
 var (
@@ -21,24 +18,8 @@ var (
 )
 
 type Result struct {
-	schema Schema
-	rows   []Row
-}
-
-func (result *Result) FormatTable(w io.Writer) {
-	writer := tablewriter.NewWriter(w)
-	writer.SetHeader(result.schema.ColumnNames())
-
-	text := make([]string, 0, 3)
-	for _, row := range result.rows {
-		for _, field := range row {
-			text = append(text, field.String())
-		}
-
-		writer.Append(text)
-		text = text[:0]
-	}
-	writer.Render()
+	Schema Schema
+	Rows   []Row
 }
 
 const MetadataFilename string = "metadata.json"
@@ -205,13 +186,13 @@ func (db *Database) doSelect(q *Select) (*Result, error) {
 
 	// FIXME: make Result streaming so we don't have to load all tuples in memory
 	result := Result{
-		rows:   make([]Row, 0),
-		schema: table.schema,
+		Rows:   make([]Row, 0),
+		Schema: table.schema,
 	}
 
 	if q.Projection.All {
 		err := table.Scan(func(r Row) error {
-			result.rows = append(result.rows, r)
+			result.Rows = append(result.Rows, r)
 			return nil
 		})
 
@@ -226,7 +207,7 @@ func (db *Database) doSelect(q *Select) (*Result, error) {
 
 		err = table.Scan(func(r Row) error {
 			projectedRow := r.Project(indexes)
-			result.rows = append(result.rows, projectedRow)
+			result.Rows = append(result.Rows, projectedRow)
 			return nil
 		})
 
@@ -234,7 +215,7 @@ func (db *Database) doSelect(q *Select) (*Result, error) {
 			return nil, err
 		}
 
-		result.schema = newSchema
+		result.Schema = newSchema
 	}
 
 	return &result, nil

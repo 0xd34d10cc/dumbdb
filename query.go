@@ -1,5 +1,5 @@
 //nolint:govet
-package main
+package dumbdb
 
 import (
 	"fmt"
