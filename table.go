@@ -14,7 +14,6 @@ type RowListPage struct {
 }
 
 func NewRowListPage(page *Page) RowListPage {
-	page.Lock()
 	nRows := binary.LittleEndian.Uint16(page.Data()[:2])
 	return RowListPage{
 		initialRows: nRows,
@@ -23,10 +22,6 @@ func NewRowListPage(page *Page) RowListPage {
 		nRows: nRows,
 		page:  page,
 	}
-}
-
-func (p *RowListPage) Unlock() {
-	p.page.Unlock()
 }
 
 func (p *RowListPage) NumRows() int {
@@ -132,8 +127,9 @@ func (table *Table) insertInto(id PageID, rows []Row) (int, error) {
 	defer page.Unpin()
 
 	i := 0
+	page.Lock()
 	lockedPage := NewRowListPage(page)
-	defer lockedPage.Unlock()
+	defer page.Unlock()
 	for i < len(rows) && lockedPage.TryInsert(rows[i], &table.schema) {
 		i++
 	}
@@ -193,8 +189,9 @@ func (table *Table) ScanPage(id PageID, onRow func(Row) error) error {
 	}
 	defer page.Unpin()
 
+	page.RLock()
 	lockedPage := NewRowListPage(page)
-	defer lockedPage.Unlock()
+	defer page.RUnlock()
 	for i := 0; i < lockedPage.NumRows(); i++ {
 		row := lockedPage.ReadRow(i, &table.schema)
 		err := onRow(row)
