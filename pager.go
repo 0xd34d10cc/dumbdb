@@ -3,137 +3,9 @@ package dumbdb
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
 	"sync"
-	"sync/atomic"
 )
-
-type PageID uint32
-
-const PageSize uint32 = 4096
-
-// any page > InvalidPageID is also considered invalid
-// so max file size is (InvalidPageID - 1) * PageSize = ~64GB
-const InvalidPageID PageID = PageID(0x00ffffff)
-
-func (id PageID) String() string {
-	if id == InvalidPageID {
-		return "PageID(invalid)"
-	}
-	return fmt.Sprintf("PageID(%d)", uint32(id))
-}
-
-var pageLocks [1024]sync.Mutex
-
-func fnv32(id PageID) uint32 {
-	val := uint32(id)
-	hash := uint32(2166136261)
-	hash *= 16777619
-	hash ^= val & 0xff
-
-	hash *= 16777619
-	hash ^= (val >> 8) & 0xff
-
-	hash *= 16777619
-	hash ^= (val >> 16) & 0xff
-	return hash
-}
-
-func LockPageID(id PageID) {
-	idx := fnv32(id) % uint32(len(pageLocks))
-	pageLocks[idx].Lock()
-}
-
-func UnlockPageID(id PageID) {
-	idx := fnv32(id) % uint32(len(pageLocks))
-	pageLocks[idx].Unlock()
-}
-
-type Page struct {
-	// Number of threads which use this page currently (pager references don't count)
-	// When pinCount > 0 page cannot be evicted from page cache
-	pinCount int32
-
-	// This field is read-only
-	id PageID
-
-	// Protects access to data
-	m sync.RWMutex
-	// true if data was modified and doesn't match what's in persistent storage
-	dirty bool
-	data  [PageSize]byte
-}
-
-func (page *Page) IsPinned() bool {
-	return atomic.LoadInt32(&page.pinCount) != 0
-}
-
-func (page *Page) Pin() {
-	// fmt.Fprintln(os.Stderr, "==================================")
-	// fmt.Fprintln(os.Stderr, page.id, "pinned at")
-	// debug.PrintStack()
-
-	atomic.AddInt32(&page.pinCount, 1)
-}
-
-func (page *Page) Unpin() {
-	// fmt.Fprintln(os.Stderr, "==================================")
-	// fmt.Fprintln(os.Stderr, page.id, "unpinned at")
-	// debug.PrintStack()
-
-	if atomic.AddInt32(&page.pinCount, -1) < 0 {
-		panic("Unpin() called on page that is not pinned")
-	}
-}
-
-func (page *Page) RLock() {
-	// fmt.Fprintln(os.Stderr, "==================================")
-	// fmt.Fprintln(os.Stderr, page.id, "r-locked at")
-	// debug.PrintStack()
-
-	page.m.RLock()
-}
-
-func (page *Page) RUnlock() {
-	// fmt.Fprintln(os.Stderr, "==================================")
-	// fmt.Fprintln(os.Stderr, page.id, "r-unlocked at")
-	// debug.PrintStack()
-
-	page.m.RUnlock()
-}
-
-func (page *Page) Lock() {
-	// fmt.Fprintln(os.Stderr, "==================================")
-	// fmt.Fprintln(os.Stderr, page.id, "w-locked at")
-	// debug.PrintStack()
-
-	page.m.Lock()
-}
-
-func (page *Page) Unlock() {
-	// fmt.Fprintln(os.Stderr, "==================================")
-	// fmt.Fprintln(os.Stderr, page.id, "w-unlocked at")
-	// debug.PrintStack()
-
-	page.m.Unlock()
-}
-
-func (page *Page) Data() []byte {
-	return page.data[:]
-}
-
-func (page *Page) IsDirty() bool {
-	return page.dirty
-}
-
-func (page *Page) MarkDirty() {
-	page.dirty = true
-}
-
-func (page *Page) MarkClean() {
-	page.dirty = false
-}
 
 const (
 	IndexHeaderSize        = 4
@@ -266,8 +138,9 @@ type Pager struct {
 	storage     Storage
 	storageSize int64
 
-	cache PageCache
-	index *AllocationIndex
+	pageLocks [128]sync.Mutex
+	cache     PageCache
+	index     *AllocationIndex
 }
 
 // Create a new pager backed by storage
@@ -305,26 +178,26 @@ func NewPager(maxPages int, storage Storage) (*Pager, error) {
 // Obtain a page by id
 // returns pinned page or error, if any
 func (pager *Pager) FetchPage(id PageID) (*Page, error) {
-	LockPageID(id)
+	pager.lockPageID(id)
 
 	// first check the memory cache
 	page := pager.cache.Get(id)
 	if page != nil {
-		UnlockPageID(id)
+		pager.unlockPageID(id)
 		return page, nil
 	}
 
 	// read from the disk
 	page, err := pager.readPage(id)
 	if err != nil {
-		UnlockPageID(id)
+		pager.unlockPageID(id)
 		return nil, err
 	}
 	page.Pin()
 
 	// put page in cache
 	evictedID, evictedPage := pager.cache.Put(id, page)
-	UnlockPageID(id)
+	pager.unlockPageID(id)
 
 	if evictedID != InvalidPageID {
 		// NOTE: this can't deadlock, because evictedPage is unpinned
@@ -363,8 +236,8 @@ func (pager *Pager) SyncPage(id PageID, page *Page) error {
 		return nil
 	}
 
-	LockPageID(id)
-	defer UnlockPageID(id)
+	pager.lockPageID(id)
+	defer pager.unlockPageID(id)
 
 	err := pager.writePage(id, page)
 	if err != nil {
@@ -415,6 +288,16 @@ func (pager *Pager) NextPage(id PageID) PageID {
 		return next
 	}
 	return InvalidPageID
+}
+
+func (pager *Pager) lockPageID(id PageID) {
+	idx := id.Hash() % uint32(len(pager.pageLocks))
+	pager.pageLocks[idx].Lock()
+}
+
+func (pager *Pager) unlockPageID(id PageID) {
+	idx := id.Hash() % uint32(len(pager.pageLocks))
+	pager.pageLocks[idx].Unlock()
 }
 
 func (pager *Pager) ensureSize(requiredSize int64) error {
