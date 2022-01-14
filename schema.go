@@ -12,10 +12,13 @@ type TypeID uint8
 const (
 	TypeInt = iota
 	TypeVarchar
+	TypeBool
 )
 
 func (t TypeID) String() string {
 	switch t {
+	case TypeBool:
+		return "bool"
 	case TypeInt:
 		return "int"
 	case TypeVarchar:
@@ -39,6 +42,8 @@ func (field *Field) Typecheck(v *Value) error {
 	switch field.TypeID {
 	case TypeInt:
 		// nothing
+	case TypeBool:
+		// also nothing
 	case TypeVarchar:
 		if len(v.Str) > int(field.Len) {
 			return fmt.Errorf("value for %v is too long (%v is max)", field.Name, field.Len)
@@ -57,6 +62,8 @@ func (field *Field) Read(data []byte) Value {
 	switch field.TypeID {
 	case TypeInt:
 		v.Int = int32(binary.LittleEndian.Uint32(data[:4]))
+	case TypeBool:
+		v.Int = int32(data[0])
 	case TypeVarchar:
 		v.Str = string(data[:field.Len])
 	default:
@@ -69,6 +76,8 @@ func (field *Field) Write(data []byte, val Value) {
 	switch val.TypeID {
 	case TypeInt:
 		binary.LittleEndian.PutUint32(data, uint32(val.Int))
+	case TypeBool:
+		data[0] = byte(val.Int)
 	case TypeVarchar:
 		copy(data, []byte(val.Str))
 		for i := len(val.Str); i < int(field.Len); i++ {
@@ -93,6 +102,8 @@ func (val *Value) String() string {
 	switch val.TypeID {
 	case TypeInt:
 		return strconv.FormatInt(int64(val.Int), 10)
+	case TypeBool:
+		return strconv.FormatBool(val.Int != 0)
 	case TypeVarchar:
 		trailingZeros := len(val.Str) - 1
 		for trailingZeros > 0 && val.Str[trailingZeros] == 0 {
@@ -137,6 +148,9 @@ func NewSchema(desc []FieldDescription) Schema {
 		case field.Type.Integer:
 			f.TypeID = TypeInt
 			f.Len = 4
+		case field.Type.Bool:
+			f.TypeID = TypeBool
+			f.Len = 1
 		case field.Type.Varchar != 0:
 			f.TypeID = TypeVarchar
 			f.Len = uint8(field.Type.Varchar)
@@ -155,7 +169,7 @@ func (schema *Schema) addField(field Field) {
 	schema.Fields = append(schema.Fields, field)
 }
 
-func (schema *Schema) getField(name string) (int, Field) {
+func (schema *Schema) GetField(name string) (int, Field) {
 	for idx, field := range schema.Fields {
 		if field.Name == name {
 			return idx, field
@@ -196,7 +210,7 @@ func (schema *Schema) Project(names []string) (Schema, []int, error) {
 	indexes := make([]int, 0, len(names))
 	newSchema := Schema{}
 	for _, fieldName := range names {
-		idx, field := schema.getField(fieldName)
+		idx, field := schema.GetField(fieldName)
 		if idx == -1 {
 			return Schema{}, nil, fmt.Errorf("no column named %v in the schema", fieldName)
 		}

@@ -171,6 +171,63 @@ func (db *Database) doInsert(insert *Insert) (*Result, error) {
 	return nil, err
 }
 
+func exprType(expr *BinOpTree, schema *Schema) (TypeID, error) {
+	switch {
+	case expr.val != nil:
+		switch {
+		case expr.val.Const != nil:
+			switch {
+			case expr.val.Const.Int != nil:
+				return TypeInt, nil
+			case expr.val.Const.Bool != nil:
+				return TypeBool, nil
+			case expr.val.Const.Str != nil:
+				return TypeVarchar, nil
+			}
+		case expr.val.Field != "":
+			idx, field := schema.GetField(expr.val.Field)
+			if idx == -1 {
+				return TypeInt, fmt.Errorf("no field named %v in table", expr.val.Field)
+			}
+
+			return field.TypeID, nil
+		case expr.val.Subexpr != nil:
+			panic("subexpr should always be nil")
+		default:
+			panic("empty value node")
+		}
+	case expr.subtree != nil:
+		left, err := exprType(expr.subtree.Left, schema)
+		if err != nil {
+			return left, err
+		}
+
+		right, err := exprType(expr.subtree.Right, schema)
+		if err != nil {
+			return right, err
+		}
+
+		op := expr.subtree.Op
+		if left != right {
+			return TypeInt, fmt.Errorf("%v op types mismatch: left is %v, right is %v", op, left, right)
+		}
+
+		if op.IsArithmetic() && left != TypeInt {
+			// TODO: handle string concatenation
+			return TypeInt, fmt.Errorf("attempt to perform arithmetic op %v on type %v", op, left)
+		}
+
+		if op.IsArithmetic() {
+			return TypeInt, nil
+		} else {
+			// logic op otherwise
+			return TypeBool, nil
+		}
+	}
+
+	return TypeInt, fmt.Errorf("unhandled expr: %v", expr)
+}
+
 func (db *Database) doSelect(q *Select) (*Result, error) {
 	db.m.RLock()
 	defer db.m.RUnlock()
@@ -180,8 +237,19 @@ func (db *Database) doSelect(q *Select) (*Result, error) {
 		return nil, ErrNoSuchTable
 	}
 
+	var filter *BinOpTree
 	if q.Where != nil {
-		return nil, errors.New("where clause is not supported yet")
+		filter = q.Where.ToBinOp()
+		t, err := exprType(filter, &table.schema)
+		if err != nil {
+			return nil, err
+		}
+
+		if t != TypeBool {
+			return nil, errors.New("where clause expression should eval to bool")
+		}
+
+		return nil, errors.New("where clause execution is not supported yet")
 	}
 
 	// FIXME: make Result streaming so we don't have to load all tuples in memory

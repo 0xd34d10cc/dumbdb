@@ -2,6 +2,7 @@
 package dumbdb
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/alecthomas/participle/v2"
@@ -20,6 +21,7 @@ var queryLexer = lexer.MustSimple([]lexer.Rule{
 
 type Type struct {
 	Integer bool `@"int"`
+	Bool    bool `| @"bool"`
 	Varchar int  `| "varchar" "(" @Int ")"`
 }
 
@@ -37,10 +39,24 @@ type Drop struct {
 	Table string `"drop" "table" @Ident`
 }
 
+type BoolVal bool
+
+func (val *BoolVal) Capture(s []string) error {
+	switch s[0] {
+	case "true":
+		*val = true
+	case "false":
+		*val = false
+	}
+
+	return errors.New("bool can only be either true or false")
+}
+
 // Same as Value, but based on pointers
 type Literal struct {
-	Int *int32  `@Int`
-	Str *string `| @String`
+	Int  *int32   `@Int`
+	Bool *BoolVal `| @("true" | "false")`
+	Str  *string  `| @String`
 }
 
 func (val *Literal) ToValue() Value {
@@ -109,6 +125,46 @@ const (
 	OpAnd
 )
 
+func (o Op) IsArithmetic() bool {
+	switch o {
+	case OpAdd, OpSub, OpMul, OpDiv:
+		return true
+	default:
+		return false
+	}
+}
+
+func (o Op) String() string {
+	switch o {
+	case OpAdd:
+		return "+"
+	case OpSub:
+		return "-"
+	case OpMul:
+		return "*"
+	case OpDiv:
+		return "/"
+	case OpEq:
+		return "="
+	case OpNotEq:
+		return "!="
+	case OpLess:
+		return "<"
+	case OpLessOrEq:
+		return "<="
+	case OpGreater:
+		return ">"
+	case OpGreaterOrEq:
+		return ">="
+	case OpOr:
+		return "or"
+	case OpAnd:
+		return "and"
+	default:
+		return "<unknown op>"
+	}
+}
+
 func (o *Op) Capture(s []string) error {
 	switch s[0] {
 	case "+":
@@ -166,8 +222,8 @@ type Term struct {
 }
 
 type OpTerm struct {
-	Op   Op    `@("+" | "-")`
-	Term *Term `@@`
+	Op    Op    `@("+" | "-")`
+	Right *Term `@@`
 }
 
 type Comp struct {
@@ -214,8 +270,179 @@ type OpDisj struct {
 // Term ::= Factor ('*' Factor | '/' Factor | '%' Factor)*
 // Factor ::= ['-'] (Var | Number | '(' Expr ')')
 type Expression struct {
-	Left  *Disj     `@@`
-	Right []*OpDisj `@@*`
+	Left *Disj     `@@`
+	Rest []*OpDisj `@@*`
+}
+
+type BinOpNode struct {
+	Op    Op
+	Left  *BinOpTree
+	Right *BinOpTree
+}
+
+type BinOpTree struct {
+	val     *ComplexValue
+	subtree *BinOpNode
+}
+
+func (e *ComplexValue) ToBinOp() *BinOpTree {
+	if e.Subexpr != nil {
+		return e.Subexpr.ToBinOp()
+	}
+
+	return &BinOpTree{
+		val: e,
+	}
+}
+
+func (e *Factor) ToBinOp() *BinOpTree {
+	if len(e.Rest) == 0 {
+		return e.Left.ToBinOp()
+	}
+
+	current := &BinOpTree{
+		subtree: &BinOpNode{
+			Left:  e.Left.ToBinOp(),
+			Right: nil,
+		},
+	}
+
+	for _, rhs := range e.Rest {
+		current.subtree.Op = rhs.Op
+		current.subtree.Right = rhs.Right.ToBinOp()
+		current = &BinOpTree{
+			subtree: &BinOpNode{
+				Left: current,
+			},
+		}
+	}
+
+	return current.subtree.Left
+}
+
+func (e *Term) ToBinOp() *BinOpTree {
+	if len(e.Rest) == 0 {
+		return e.Left.ToBinOp()
+	}
+
+	current := &BinOpTree{
+		subtree: &BinOpNode{
+			Left:  e.Left.ToBinOp(),
+			Right: nil,
+		},
+	}
+
+	for _, rhs := range e.Rest {
+		current.subtree.Op = rhs.Op
+		current.subtree.Right = rhs.Right.ToBinOp()
+		current = &BinOpTree{
+			subtree: &BinOpNode{
+				Left: current,
+			},
+		}
+	}
+
+	return current.subtree.Left
+}
+
+func (e *Comp) ToBinOp() *BinOpTree {
+	if len(e.Rest) == 0 {
+		return e.Left.ToBinOp()
+	}
+
+	current := &BinOpTree{
+		subtree: &BinOpNode{
+			Left:  e.Left.ToBinOp(),
+			Right: nil,
+		},
+	}
+
+	for _, rhs := range e.Rest {
+		current.subtree.Op = rhs.Op
+		current.subtree.Right = rhs.Right.ToBinOp()
+		current = &BinOpTree{
+			subtree: &BinOpNode{
+				Left: current,
+			},
+		}
+	}
+
+	return current.subtree.Left
+}
+
+func (e *Conj) ToBinOp() *BinOpTree {
+	if len(e.Rest) == 0 {
+		return e.Left.ToBinOp()
+	}
+
+	current := &BinOpTree{
+		subtree: &BinOpNode{
+			Left:  e.Left.ToBinOp(),
+			Right: nil,
+		},
+	}
+
+	for _, rhs := range e.Rest {
+		current.subtree.Op = rhs.Op
+		current.subtree.Right = rhs.Right.ToBinOp()
+		current = &BinOpTree{
+			subtree: &BinOpNode{
+				Left: current,
+			},
+		}
+	}
+
+	return current.subtree.Left
+}
+
+func (e *Disj) ToBinOp() *BinOpTree {
+	if len(e.Rest) == 0 {
+		return e.Left.ToBinOp()
+	}
+
+	current := &BinOpTree{
+		subtree: &BinOpNode{
+			Left:  e.Left.ToBinOp(),
+			Right: nil,
+		},
+	}
+
+	for _, rhs := range e.Rest {
+		current.subtree.Op = rhs.Op
+		current.subtree.Right = rhs.Right.ToBinOp()
+		current = &BinOpTree{
+			subtree: &BinOpNode{
+				Left: current,
+			},
+		}
+	}
+
+	return current.subtree.Left
+}
+
+func (e *Expression) ToBinOp() *BinOpTree {
+	if len(e.Rest) == 0 {
+		return e.Left.ToBinOp()
+	}
+
+	current := &BinOpTree{
+		subtree: &BinOpNode{
+			Left:  e.Left.ToBinOp(),
+			Right: nil,
+		},
+	}
+
+	for _, rhs := range e.Rest {
+		current.subtree.Op = rhs.Op
+		current.subtree.Right = rhs.Right.ToBinOp()
+		current = &BinOpTree{
+			subtree: &BinOpNode{
+				Left: current,
+			},
+		}
+	}
+
+	return current.subtree.Left
 }
 
 type Select struct {
