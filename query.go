@@ -41,6 +41,13 @@ type Drop struct {
 
 type BoolVal bool
 
+func (val BoolVal) ToInt() int32 {
+	if val {
+		return 1
+	}
+	return 0
+}
+
 func (val *BoolVal) Capture(s []string) error {
 	switch s[0] {
 	case "true":
@@ -131,6 +138,78 @@ func (o Op) IsArithmetic() bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func (o Op) Apply(left Value, right Value) Value {
+	if left.TypeID == TypeVarchar || right.TypeID == TypeVarchar {
+		// TODO: implement
+		panic("Str operations are not supported")
+	}
+
+	switch o {
+	case OpAdd:
+		return Value{
+			TypeID: TypeInt,
+			Int:    left.Int + right.Int,
+		}
+	case OpSub:
+		return Value{
+			TypeID: TypeInt,
+			Int:    left.Int - right.Int,
+		}
+	case OpMul:
+		return Value{
+			TypeID: TypeInt,
+			Int:    left.Int * right.Int,
+		}
+	case OpDiv:
+		return Value{
+			TypeID: TypeInt,
+			Int:    left.Int / right.Int,
+		}
+	case OpEq:
+		return Value{
+			TypeID: TypeBool,
+			Int:    BoolVal(left.Int == right.Int).ToInt(),
+		}
+	case OpNotEq:
+		return Value{
+			TypeID: TypeBool,
+			Int:    BoolVal(left.Int != right.Int).ToInt(),
+		}
+	case OpLess:
+		return Value{
+			TypeID: TypeBool,
+			Int:    BoolVal(left.Int < right.Int).ToInt(),
+		}
+	case OpLessOrEq:
+		return Value{
+			TypeID: TypeBool,
+			Int:    BoolVal(left.Int <= right.Int).ToInt(),
+		}
+	case OpGreater:
+		return Value{
+			TypeID: TypeBool,
+			Int:    BoolVal(left.Int > right.Int).ToInt(),
+		}
+	case OpGreaterOrEq:
+		return Value{
+			TypeID: TypeBool,
+			Int:    BoolVal(left.Int >= right.Int).ToInt(),
+		}
+	case OpOr:
+		return Value{
+			TypeID: TypeBool,
+			Int:    BoolVal(left.Int != 0 || right.Int != 0).ToInt(),
+		}
+	case OpAnd:
+		return Value{
+			TypeID: TypeBool,
+			Int:    BoolVal(left.Int != 0 && right.Int != 0).ToInt(),
+		}
+	default:
+		panic("unhandled op")
 	}
 }
 

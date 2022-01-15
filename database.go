@@ -212,12 +212,13 @@ func exprType(expr *BinOpTree, schema *Schema) (TypeID, error) {
 			return TypeInt, fmt.Errorf("%v op types mismatch: left is %v, right is %v", op, left, right)
 		}
 
-		if op.IsArithmetic() && left != TypeInt {
+		isArithmetic := op.IsArithmetic()
+		if isArithmetic && left != TypeInt {
 			// TODO: handle string concatenation
 			return TypeInt, fmt.Errorf("attempt to perform arithmetic op %v on type %v", op, left)
 		}
 
-		if op.IsArithmetic() {
+		if isArithmetic {
 			return TypeInt, nil
 		} else {
 			// logic op otherwise
@@ -226,6 +227,50 @@ func exprType(expr *BinOpTree, schema *Schema) (TypeID, error) {
 	}
 
 	return TypeInt, fmt.Errorf("unhandled expr: %v", expr)
+}
+
+// |expr| should be typechecked before calling this function
+func evalExpr(expr *BinOpTree, fieldToIdx map[string]int, row Row) Value {
+	switch {
+	case expr.val != nil:
+		switch {
+		case expr.val.Const != nil:
+			switch {
+			case expr.val.Const.Int != nil:
+				return Value{
+					TypeID: TypeInt,
+					Int:    *expr.val.Const.Int,
+				}
+			case expr.val.Const.Bool != nil:
+				return Value{
+					TypeID: TypeBool,
+					Int:    expr.val.Const.Bool.ToInt(),
+				}
+			case expr.val.Const.Str != nil:
+				return Value{
+					TypeID: TypeVarchar,
+					Str:    *expr.val.Const.Str,
+				}
+			}
+		case expr.val.Field != "":
+			idx, ok := fieldToIdx[expr.val.Field]
+			if !ok {
+				panic("unknown field")
+			}
+			return row[idx]
+		case expr.val.Subexpr != nil:
+			panic("subexpr should always be nil")
+		default:
+			panic("empty value node")
+		}
+	case expr.subtree != nil:
+		left := evalExpr(expr.subtree.Left, fieldToIdx, row)
+		right := evalExpr(expr.subtree.Right, fieldToIdx, row)
+		op := expr.subtree.Op
+		return op.Apply(left, right)
+	}
+
+	panic("unhandled binop node")
 }
 
 func (db *Database) doSelect(q *Select) (*Result, error) {
@@ -238,6 +283,7 @@ func (db *Database) doSelect(q *Select) (*Result, error) {
 	}
 
 	var filter *BinOpTree
+	var fieldToIdx map[string]int
 	if q.Where != nil {
 		filter = q.Where.ToBinOp()
 		t, err := exprType(filter, &table.schema)
@@ -249,7 +295,11 @@ func (db *Database) doSelect(q *Select) (*Result, error) {
 			return nil, errors.New("where clause expression should eval to bool")
 		}
 
-		return nil, errors.New("where clause execution is not supported yet")
+		fieldToIdx = make(map[string]int)
+		fields := table.schema.ColumnNames()
+		for i, name := range fields {
+			fieldToIdx[name] = i
+		}
 	}
 
 	// FIXME: make Result streaming so we don't have to load all tuples in memory
@@ -260,6 +310,12 @@ func (db *Database) doSelect(q *Select) (*Result, error) {
 
 	if q.Projection.All {
 		err := table.Scan(func(r Row) error {
+			if filter != nil {
+				if evalExpr(filter, fieldToIdx, r).Int == 0 {
+					return nil
+				}
+			}
+
 			result.Rows = append(result.Rows, r)
 			return nil
 		})
@@ -274,6 +330,12 @@ func (db *Database) doSelect(q *Select) (*Result, error) {
 		}
 
 		err = table.Scan(func(r Row) error {
+			if filter != nil {
+				if evalExpr(filter, fieldToIdx, r).Int == 0 {
+					return nil
+				}
+			}
+
 			projectedRow := r.Project(indexes)
 			result.Rows = append(result.Rows, projectedRow)
 			return nil
