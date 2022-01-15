@@ -213,12 +213,15 @@ func exprType(expr *BinOpTree, schema *Schema) (TypeID, error) {
 		}
 
 		isArithmetic := op.IsArithmetic()
-		if isArithmetic && left != TypeInt {
+		isStrConcat := op == OpAdd && left == TypeVarchar
+		if isArithmetic && !isStrConcat && left != TypeInt {
 			// TODO: handle string concatenation
 			return TypeInt, fmt.Errorf("attempt to perform arithmetic op %v on type %v", op, left)
 		}
 
-		if isArithmetic {
+		if isStrConcat {
+			return TypeVarchar, nil
+		} else if isArithmetic {
 			return TypeInt, nil
 		} else {
 			// logic op otherwise

@@ -142,13 +142,15 @@ func (o Op) IsArithmetic() bool {
 }
 
 func (o Op) Apply(left Value, right Value) Value {
-	if left.TypeID == TypeVarchar || right.TypeID == TypeVarchar {
-		// TODO: implement
-		panic("Str operations are not supported")
-	}
-
 	switch o {
 	case OpAdd:
+		if left.TypeID == TypeVarchar {
+			return Value{
+				TypeID: TypeVarchar,
+				Str:    left.StrVal() + right.StrVal(),
+			}
+		}
+
 		return Value{
 			TypeID: TypeInt,
 			Int:    left.Int + right.Int,
@@ -169,31 +171,73 @@ func (o Op) Apply(left Value, right Value) Value {
 			Int:    left.Int / right.Int,
 		}
 	case OpEq:
+		if left.TypeID == TypeVarchar {
+			return Value{
+				TypeID: TypeBool,
+				Int:    BoolVal(left.StrVal() == right.StrVal()).ToInt(),
+			}
+		}
+
 		return Value{
 			TypeID: TypeBool,
 			Int:    BoolVal(left.Int == right.Int).ToInt(),
 		}
 	case OpNotEq:
+		if left.TypeID == TypeVarchar {
+			return Value{
+				TypeID: TypeBool,
+				Int:    BoolVal(left.StrVal() != right.StrVal()).ToInt(),
+			}
+		}
+
 		return Value{
 			TypeID: TypeBool,
 			Int:    BoolVal(left.Int != right.Int).ToInt(),
 		}
 	case OpLess:
+		if left.TypeID == TypeVarchar {
+			return Value{
+				TypeID: TypeBool,
+				Int:    BoolVal(left.StrVal() < right.StrVal()).ToInt(),
+			}
+		}
+
 		return Value{
 			TypeID: TypeBool,
 			Int:    BoolVal(left.Int < right.Int).ToInt(),
 		}
 	case OpLessOrEq:
+		if left.TypeID == TypeVarchar {
+			return Value{
+				TypeID: TypeBool,
+				Int:    BoolVal(left.StrVal() <= right.StrVal()).ToInt(),
+			}
+		}
+
 		return Value{
 			TypeID: TypeBool,
 			Int:    BoolVal(left.Int <= right.Int).ToInt(),
 		}
 	case OpGreater:
+		if left.TypeID == TypeVarchar {
+			return Value{
+				TypeID: TypeBool,
+				Int:    BoolVal(left.StrVal() > right.StrVal()).ToInt(),
+			}
+		}
+
 		return Value{
 			TypeID: TypeBool,
 			Int:    BoolVal(left.Int > right.Int).ToInt(),
 		}
 	case OpGreaterOrEq:
+		if left.TypeID == TypeVarchar {
+			return Value{
+				TypeID: TypeBool,
+				Int:    BoolVal(left.StrVal() >= right.StrVal()).ToInt(),
+			}
+		}
+
 		return Value{
 			TypeID: TypeBool,
 			Int:    BoolVal(left.Int >= right.Int).ToInt(),

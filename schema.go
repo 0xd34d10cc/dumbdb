@@ -94,6 +94,18 @@ type Value struct {
 	Str    string
 }
 
+func (val *Value) StrVal() string {
+	trailingZeros := len(val.Str) - 1
+	for trailingZeros > 0 && val.Str[trailingZeros] == 0 {
+		trailingZeros--
+	}
+
+	if trailingZeros > 0 {
+		trailingZeros++
+	}
+	return val.Str[:trailingZeros]
+}
+
 func (val *Value) String() string {
 	if val == nil {
 		return "<nil value>"
@@ -105,15 +117,7 @@ func (val *Value) String() string {
 	case TypeBool:
 		return strconv.FormatBool(val.Int != 0)
 	case TypeVarchar:
-		trailingZeros := len(val.Str) - 1
-		for trailingZeros > 0 && val.Str[trailingZeros] == 0 {
-			trailingZeros--
-		}
-
-		if trailingZeros > 0 {
-			trailingZeros++
-		}
-		return val.Str[:trailingZeros]
+		return val.StrVal()
 	}
 	return "<invalid value>"
 }
