@@ -56,9 +56,14 @@ func RecvMessage(conn net.Conn) ([]byte, error) {
 	return response, err
 }
 
+type ResponseChunk struct {
+	Schema Schema
+	Rows   []Row
+}
+
 type Response struct {
-	Result *Result `json:",omitempty"`
-	Error  string  `json:",omitempty"`
+	Result *ResponseChunk `json:",omitempty"`
+	Error  string         `json:",omitempty"`
 }
 
 func SendResponse(conn net.Conn, response *Response) error {

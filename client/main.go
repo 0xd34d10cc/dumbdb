@@ -15,12 +15,12 @@ import (
 	"github.com/olekukonko/tablewriter"
 )
 
-func formatTable(result *dumbdb.Result, w io.Writer) {
+func formatTable(rows []dumbdb.Row, schema dumbdb.Schema, w io.Writer) {
 	writer := tablewriter.NewWriter(w)
-	writer.SetHeader(result.Schema.ColumnNames())
+	writer.SetHeader(schema.ColumnNames())
 
 	text := make([]string, 0, 3)
-	for _, row := range result.Rows {
+	for _, row := range rows {
 		for _, field := range row {
 			text = append(text, field.String())
 		}
@@ -69,7 +69,7 @@ func runCLI(history string, conn net.Conn) {
 			}
 
 			if response.Result != nil {
-				formatTable(response.Result, os.Stdout)
+				formatTable(response.Result.Rows, response.Result.Schema, os.Stdout)
 			}
 		}
 	}

@@ -47,7 +47,7 @@ func handleClient(db *dumbdb.Database, conn net.Conn) {
 
 		log.Printf("[%v] Running \"%v\"\n", conn.RemoteAddr(), query)
 
-		result, err := db.Execute(q)
+		result, err := db.Execute(context.Background(), q)
 		if err != nil {
 			log.Printf("[%v] Failed to process query: %v\n", conn.RemoteAddr(), err)
 			// TODO: handle error?
@@ -58,8 +58,17 @@ func handleClient(db *dumbdb.Database, conn net.Conn) {
 		}
 
 		if result != nil {
+			// TODO: send rows by chunks
+			rows := make([]dumbdb.Row, 0)
+			for row := range result.Rows {
+				rows = append(rows, row)
+			}
+
 			err = dumbdb.SendResponse(conn, &dumbdb.Response{
-				Result: result,
+				Result: &dumbdb.ResponseChunk{
+					Schema: result.Schema,
+					Rows:   rows,
+				},
 			})
 		} else {
 			err = dumbdb.SendMessage(conn, []byte(""))

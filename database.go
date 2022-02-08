@@ -1,6 +1,7 @@
 package dumbdb
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,7 +20,7 @@ var (
 
 type Result struct {
 	Schema Schema
-	Rows   []Row
+	Rows   <-chan Row
 }
 
 const MetadataFilename string = "metadata.json"
@@ -215,7 +216,6 @@ func exprType(expr *BinOpTree, schema *Schema) (TypeID, error) {
 		isArithmetic := op.IsArithmetic()
 		isStrConcat := op == OpAdd && left == TypeVarchar
 		if isArithmetic && !isStrConcat && left != TypeInt {
-			// TODO: handle string concatenation
 			return TypeInt, fmt.Errorf("attempt to perform arithmetic op %v on type %v", op, left)
 		}
 
@@ -276,7 +276,7 @@ func evalExpr(expr *BinOpTree, fieldToIdx map[string]int, row Row) Value {
 	panic("unhandled binop node")
 }
 
-func (db *Database) doSelect(q *Select) (*Result, error) {
+func (db *Database) doSelect(ctx context.Context, q *Select) (*Result, error) {
 	db.m.RLock()
 	defer db.m.RUnlock()
 
@@ -285,11 +285,13 @@ func (db *Database) doSelect(q *Select) (*Result, error) {
 		return nil, ErrNoSuchTable
 	}
 
-	var filter *BinOpTree
-	var fieldToIdx map[string]int
+	filter := func(row Row) bool {
+		return true
+	}
+
 	if q.Where != nil {
-		filter = q.Where.ToBinOp()
-		t, err := exprType(filter, &table.schema)
+		filterTree := q.Where.ToBinOp()
+		t, err := exprType(filterTree, &table.schema)
 		if err != nil {
 			return nil, err
 		}
@@ -298,63 +300,44 @@ func (db *Database) doSelect(q *Select) (*Result, error) {
 			return nil, errors.New("where clause expression should eval to bool")
 		}
 
-		fieldToIdx = make(map[string]int)
+		fieldToIdx := make(map[string]int)
 		fields := table.schema.ColumnNames()
 		for i, name := range fields {
 			fieldToIdx[name] = i
 		}
-	}
 
-	// FIXME: make Result streaming so we don't have to load all tuples in memory
-	result := Result{
-		Rows:   make([]Row, 0),
-		Schema: table.schema,
-	}
-
-	if q.Projection.All {
-		err := table.Scan(func(r Row) error {
-			if filter != nil {
-				if evalExpr(filter, fieldToIdx, r).Int == 0 {
-					return nil
-				}
-			}
-
-			result.Rows = append(result.Rows, r)
-			return nil
-		})
-
-		if err != nil {
-			return nil, err
+		filter = func(row Row) bool {
+			return evalExpr(filterTree, fieldToIdx, row).Int != 0
 		}
-	} else {
+	}
+
+	project := func(row Row) Row {
+		return row
+	}
+
+	schema := table.schema
+	if !q.Projection.All {
 		newSchema, indexes, err := table.schema.Project(q.Projection.Fields)
 		if err != nil {
 			return nil, err
 		}
 
-		err = table.Scan(func(r Row) error {
-			if filter != nil {
-				if evalExpr(filter, fieldToIdx, r).Int == 0 {
-					return nil
-				}
-			}
-
-			projectedRow := r.Project(indexes)
-			result.Rows = append(result.Rows, projectedRow)
-			return nil
-		})
-
-		if err != nil {
-			return nil, err
+		project = func(row Row) Row {
+			return row.Project(indexes)
 		}
 
-		result.Schema = newSchema
+		schema = newSchema
+	}
+
+	result := Result{
+		Rows:   FullScan(ctx, table, filter, project),
+		Schema: schema,
 	}
 
 	return &result, nil
 }
 
-func (db *Database) Execute(query *Query) (*Result, error) {
+func (db *Database) Execute(ctx context.Context, query *Query) (*Result, error) {
 	switch {
 	case query.Create != nil:
 		return db.doCreate(query.Create)
@@ -363,7 +346,7 @@ func (db *Database) Execute(query *Query) (*Result, error) {
 	case query.Insert != nil:
 		return db.doInsert(query.Insert)
 	case query.Select != nil:
-		return db.doSelect(query.Select)
+		return db.doSelect(ctx, query.Select)
 	default:
 		return nil, ErrUnhandledQuery
 	}
